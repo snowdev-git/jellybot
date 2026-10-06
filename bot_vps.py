@@ -82,7 +82,7 @@ def limpar_nome(nome):
     return re.sub(r'[\\/*?:"<>|]', "", str(nome))
 
 # ==========================================
-# MOTOR DE BUSCA & VERIFICAÇÃO DE FONTES
+# MOTOR DE BUSCA & VERIFICAÇÃO DE FONTES (APENAS PT-BR)
 # ==========================================
 def verificar_fontes_ativas(tipo, imdb_id, season=None, episode=None):
     fontes_encontradas = []
@@ -96,7 +96,14 @@ def verificar_fontes_ativas(tipo, imdb_id, season=None, episode=None):
             if res.status_code == 200:
                 streams = res.json().get("streams", [])
                 validos = [s for s in streams if "url" in s and s["url"].startswith("http")]
-                if validos: fontes_encontradas.append({"id": idx_pos, "nome": idx["nome"]})
+                # Filtra apenas se encontrar indício de áudio em PT-BR
+                pt_validos = []
+                for s in validos:
+                    txt = (s.get("title", "") + " " + s.get("name", "")).lower()
+                    if "dub" in txt or "dual" in txt or "pt-br" in txt or "portugues" in txt:
+                        pt_validos.append(s)
+                if pt_validos: 
+                    fontes_encontradas.append({"id": idx_pos, "nome": idx["nome"]})
         except: continue
     return fontes_encontradas
 
@@ -120,16 +127,9 @@ def obter_stream_com_idioma(tipo, imdb_id, season=None, episode=None, indexador_
                     houve_alteracao = True
                     for s in validos:
                         txt = (s.get("title", "") + " " + s.get("name", "")).lower()
-                        if "dub" in txt or "dual" in txt or "pt-br" in txt:
+                        if "dub" in txt or "dual" in txt or "pt-br" in txt or "portugues" in txt:
                             if houve_alteracao: guardar_indexadores(indexadores)
                             return s["url"], "Dublado 🇧🇷", idx["nome"]
-                    for s in validos:
-                        txt = (s.get("title", "") + " " + s.get("name", "")).lower()
-                        if "leg" in txt or "sub" in txt:
-                            if houve_alteracao: guardar_indexadores(indexadores)
-                            return s["url"], "Legendado 🇺🇸", idx["nome"]
-                    if houve_alteracao: guardar_indexadores(indexadores)
-                    return validos[0]["url"], "Desconhecido", idx["nome"]
             else:
                 if indexador_alvo == "auto": 
                     idx["strikes"] = idx.get("strikes", 0) + 1
@@ -196,7 +196,7 @@ def tarefa_renovacao_lote(chat_id, mensagem_id, escopo, indexador_escolhido):
                     with open(os.path.join(pasta, f"{titulo}.strm"), "w", encoding="utf-8") as f: f.write(link)
                     registrar_historico("movie", titulo, nome_idx)
                     sucessos += 1
-                else: falhas.append(f"[Filme] {titulo} - Sem link no indexador")
+                else: falhas.append(f"[Filme] {titulo} - Sem link PT-BR no indexador")
             else:
                 ep_sucessos, eps_totais = 0, 0
                 temporadas_hist = hist["series"].get(titulo, {})
@@ -214,7 +214,7 @@ def tarefa_renovacao_lote(chat_id, mensagem_id, escopo, indexador_escolhido):
                 if ep_sucessos > 0:
                     sucessos += 1
                     if ep_sucessos < eps_totais: falhas.append(f"[Série] {titulo} - Incompleta ({ep_sucessos}/{eps_totais})")
-                else: falhas.append(f"[Série] {titulo} - Nenhum link encontrado")
+                else: falhas.append(f"[Série] {titulo} - Nenhum link PT-BR encontrado")
         except:
             falhas.append(f"[{'Filme' if tipo == 'movie' else 'Série'}] {titulo} - Erro interno")
         time.sleep(2)
@@ -302,7 +302,6 @@ def callback_handler(call):
     bot.answer_callback_query(call.id)
     chat_id, dados = call.message.chat.id, call.data
 
-    # --- GESTÃO DE INDEXADORES ---
     if dados.startswith("g_idx_"):
         i = int(dados.split("_")[2])
         idx = carregar_indexadores()[i]
@@ -335,7 +334,6 @@ def callback_handler(call):
         msg = bot.send_message(chat_id, "Envia o nome do novo indexador:")
         bot.register_next_step_handler(msg, passo2_add_idx)
 
-    # --- RENOVAÇÃO EM LOTE ---
     elif dados.startswith("lote_"):
         escopo = dados.split("_")[1]
         markup = InlineKeyboardMarkup(row_width=1)
@@ -349,7 +347,6 @@ def callback_handler(call):
         msg_progresso = bot.edit_message_text("⏳ A iniciar lote...", chat_id, call.message.message_id)
         threading.Thread(target=tarefa_renovacao_lote, args=(chat_id, msg_progresso.message_id, escopo, idx_esc)).start()
 
-    # --- BIBLIOTECA (FILMES/SÉRIES) ---
     elif dados == "hist_menu_filmes":
         filmes = list(carregar_historico().get("filmes", {}).keys())
         if not filmes: return bot.edit_message_text("❌ Sem filmes.", chat_id, call.message.message_id)
@@ -408,12 +405,11 @@ def callback_handler(call):
         res = requests.get(f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&query={re.sub(r' \(\d{4}\)$', '', titulo)}&language=pt-PT").json().get("results", [])
         if res: callback_handler(call._replace(data=f"s_{res[0]['id']}"))
 
-    # --- DOWNLOADS ---
     elif dados.startswith("m_"):
         tmdb_id = dados.split("_")[1]
         imdb_id = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json().get('external_ids', {}).get('imdb_id')
         fontes = verificar_fontes_ativas("movie", imdb_id)
-        if not fontes: return bot.edit_message_text("❌ Sem indexadores para este filme.", chat_id, call.message.message_id)
+        if not fontes: return bot.edit_message_text("❌ Sem indexadores com áudio PT-BR para este filme.", chat_id, call.message.message_id)
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("🌟 Automático", callback_data=f"run_m_{tmdb_id}_auto"))
         for f in fontes: markup.add(InlineKeyboardButton(f"✅ {f['nome']}", callback_data=f"run_m_{tmdb_id}_{f['id']}"))
@@ -425,13 +421,12 @@ def callback_handler(call):
         imdb_id, id_nome = res.get('external_ids', {}).get('imdb_id'), f"{limpar_nome(res.get('title', ''))} ({res.get('release_date', '0000')[:4]})"
         link, idioma, nome_idx = obter_stream_com_idioma("movie", imdb_id, indexador_alvo=idx_esc)
         if link:
-            # CORRIGIDO PARA USAR FILMES (EM MAIÚSCULAS)
             pasta = os.path.join(PASTA_BASE, "FILMES", id_nome)
             os.makedirs(pasta, exist_ok=True)
             with open(os.path.join(pasta, f"{id_nome}.strm"), "w", encoding="utf-8") as f: f.write(link)
             registrar_historico("movie", id_nome, nome_idx)
             bot.edit_message_text(f"✅ *Filme Pronto!*\n🎬 {id_nome}\n🔊 {idioma}\n📡 {nome_idx}", chat_id, call.message.message_id, parse_mode="Markdown")
-        else: bot.edit_message_text("❌ Nenhum link funcional.", chat_id, call.message.message_id)
+        else: bot.edit_message_text("❌ Nenhum link PT-BR funcional encontrado.", chat_id, call.message.message_id)
 
     elif dados.startswith("s_"):
         tmdb_id = dados.split("_")[1]
@@ -444,7 +439,7 @@ def callback_handler(call):
         tmdb_id, season_num, ep_count = dados.split("_")[1:4]
         imdb_id = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json().get('external_ids', {}).get('imdb_id')
         fontes = verificar_fontes_ativas("series", imdb_id, season_num, 1)
-        if not fontes: return bot.edit_message_text(f"❌ Sem indexadores para a T{season_num}.", chat_id, call.message.message_id)
+        if not fontes: return bot.edit_message_text(f"❌ Sem indexadores com fontes PT-BR para a T{season_num}.", chat_id, call.message.message_id)
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("🌟 Automático", callback_data=f"run_s_{tmdb_id}_{season_num}_{ep_count}_auto"))
         for f in fontes: markup.add(InlineKeyboardButton(f"✅ {f['nome']}", callback_data=f"run_s_{tmdb_id}_{season_num}_{ep_count}_{f['id']}"))
@@ -454,7 +449,6 @@ def callback_handler(call):
         tmdb_id, season_num, ep_count, idx_esc = dados.split("_")[2:6]
         res = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json()
         imdb_id, id_nome = res.get('external_ids', {}).get('imdb_id'), f"{limpar_nome(res.get('name', ''))} ({res.get('first_air_date', '0000')[:4]})"
-        # CORRIGIDO PARA USAR SERIES (EM MAIÚSCULAS)
         pasta_temp = os.path.join(PASTA_BASE, "SERIES", id_nome, f"Season {int(season_num):02d}")
         os.makedirs(pasta_temp, exist_ok=True)
         sucessos = 0
@@ -464,7 +458,7 @@ def callback_handler(call):
                 with open(os.path.join(pasta_temp, f"{id_nome} S{int(season_num):02d}E{ep:02d}.strm"), "w", encoding="utf-8") as f: f.write(link)
                 registrar_historico("series", id_nome, nome_idx, int(season_num), ep)
                 sucessos += 1
-        bot.edit_message_text(f"✅ *Concluído!*\n📺 {id_nome} - S{int(season_num):02d}\n📥 {sucessos}/{ep_count} links.\n📡 {nome_idx}", chat_id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"✅ *Concluído!*\n📺 {id_nome} - S{int(season_num):02d}\n📥 {sucessos}/{ep_count} links PT-BR.\n📡 {nome_idx}", chat_id, call.message.message_id, parse_mode="Markdown")
 
 def salvar_url_idx(message, idx_id):
     nova_url = message.text.strip().replace("/manifest.json", "")
