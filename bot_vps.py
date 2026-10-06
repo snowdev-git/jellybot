@@ -14,7 +14,7 @@ import threading
 TELEGRAM_TOKEN = "8994962973:AAHSi_9Pu952FyaA6mc_Ugcqls9_htrkze0"
 TMDB_API_KEY = "3755e8749d79c3d9b395e2041c281a52"
 
-# 🔒 SEGURANÇA: Coloca o teu ID do Telegram aqui
+# 🔒 SEGURANÇA: ID do Administrador
 ADMIN_ID = 1289593084 
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -25,8 +25,11 @@ PASTA_BASE = "/DATA/Media"
 HISTORICO_ARQUIVO = os.path.join(DIRETORIO_SCRIPT, "historico.json")
 INDEXADORES_ARQUIVO = os.path.join(DIRETORIO_SCRIPT, "indexadores.json")
 
+# Dicionário temporário para armazenar as opções de qualidade selecionáveis durante a sessão
+SESSAO_QUALIDADES = {}
+
 # ==========================================
-# GESTÃO DE DADOS (HISTÓRICO E INDEXADORES)
+# GESTÃO DE DADOS
 # ==========================================
 def carregar_indexadores():
     if os.path.exists(INDEXADORES_ARQUIVO):
@@ -82,8 +85,20 @@ def registrar_historico(tipo, titulo, indexador, temporada=None, episodio=None):
 def limpar_nome(nome):
     return re.sub(r'[\\/*?:"<>|]', "", str(nome))
 
+def extrair_qualidade(texto):
+    txt = texto.lower()
+    if "4k" in txt or "2160p" in txt or "uhd" in txt:
+        return "4K / 2160p 🌟"
+    elif "1080p" in txt or "fhd" in txt:
+        return "1080p Full HD 🎬"
+    elif "720p" in txt or "hd" in txt:
+        return "720p HD ⚡"
+    elif "480p" in txt or "sd" in txt:
+        return "480p SD 📦"
+    return "Qualidade Padrão 📺"
+
 # ==========================================
-# MOTOR DE BUSCA & VERIFICAÇÃO DE FONTES (FLEXÍVEL PT-BR / FROSTSTREAM)
+# MOTOR DE BUSCA & SELEÇÃO DE QUALIDADES
 # ==========================================
 def verificar_fontes_ativas(tipo, imdb_id, season=None, episode=None):
     fontes_encontradas = []
@@ -98,15 +113,13 @@ def verificar_fontes_ativas(tipo, imdb_id, season=None, episode=None):
                 streams = res.json().get("streams", [])
                 validos = [s for s in streams if "url" in s and s["url"].startswith("http")]
                 if validos:
-                    # Se tiver qualquer stream válido num indexador BR/FrostStream, aceita a fonte
                     fontes_encontradas.append({"id": idx_pos, "nome": idx["nome"]})
         except: continue
     return fontes_encontradas
 
-def obter_stream_com_idioma(tipo, imdb_id, season=None, episode=None, indexador_alvo="auto"):
+def obter_streams_por_qualidade(tipo, imdb_id, season=None, episode=None, indexador_alvo="auto"):
     headers = {"User-Agent": "Mozilla/5.0"}
     indexadores = carregar_indexadores()
-    houve_alteracao = False
 
     for idx_pos, idx in enumerate(indexadores):
         if indexador_alvo != "auto" and str(idx_pos) != str(indexador_alvo): continue
@@ -119,47 +132,44 @@ def obter_stream_com_idioma(tipo, imdb_id, season=None, episode=None, indexador_
                 streams = res.json().get("streams", [])
                 validos = [s for s in streams if "url" in s and s["url"].startswith("http")]
                 if validos:
-                    idx["strikes"] = 0
-                    houve_alteracao = True
-                    
-                    # 1. Prioridade: Procura marcação explícita de Português/Dublado
+                    # Mapear qualidades únicas encontradas
+                    opcoes_qualidade = {}
                     for s in validos:
-                        txt = (s.get("title", "") + " " + s.get("name", "")).lower()
-                        if "dub" in txt or "dual" in txt or "pt-br" in txt or "portugues" in txt:
-                            if houve_alteracao: guardar_indexadores(indexadores)
-                            return s["url"], "Dublado 🇧🇷", idx["nome"]
-                    
-                    # 2. Fallback inteligente para FrostStream e workers da Cloudflare
-                    # (Se o link for de um indexador PT-BR e não contiver marcação de legenda separada)
-                    for s in validos:
-                        txt = (s.get("title", "") + " " + s.get("name", "")).lower()
-                        url_stream = s.get("url", "").lower()
-                        if "workers.dev" in url_stream or "froststream" in idx["nome"].lower() or not ("leg" in txt or "sub" in txt):
-                            if houve_alteracao: guardar_indexadores(indexadores)
-                            return s["url"], "PT-BR / Servidor BR 🇧🇷", idx["nome"]
+                        txt_label = (s.get("title", "") + " " + s.get("name", ""))
+                        qual = extrair_qualidade(txt_label)
+                        if qual not in opcoes_qualidade:
+                            opcoes_qualidade[qual] = {"url": s["url"], "indexador": idx["nome"], "info": txt_label}
+                    return opcoes_qualidade, idx["nome"]
+        except: continue
+    return {}, None
 
-                    # 3. Se for puramente legendado/inglês e não for de um servidor BR nativo, aceita o primeiro disponível do indexador
-                    if houve_alteracao: guardar_indexadores(indexadores)
+def obter_stream_com_idioma(tipo, imdb_id, season=None, episode=None, indexador_alvo="auto"):
+    # Utilizado na renovação em lote e automação direta
+    headers = {"User-Agent": "Mozilla/5.0"}
+    indexadores = carregar_indexadores()
+
+    for idx_pos, idx in enumerate(indexadores):
+        if indexador_alvo != "auto" and str(idx_pos) != str(indexador_alvo): continue
+        if not idx.get("ativo", True) and indexador_alvo == "auto": continue
+        
+        url = f"{idx['url']}/stream/movie/{imdb_id}.json" if tipo == "movie" else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                streams = res.json().get("streams", [])
+                validos = [s for s in streams if "url" in s and s["url"].startswith("http")]
+                if validos:
+                    # Prioriza 1080p ou 720p na renovação em lote para equilibrar qualidade/peso
+                    for s in validos:
+                        txt = (s.get("title", "") + " " + s.get("name", "")).lower()
+                        if "1080p" in txt or "720p" in txt:
+                            return s["url"], "PT-BR / Servidor BR 🇧🇷", idx["nome"]
                     return validos[0]["url"], "Disponível", idx["nome"]
-            else:
-                if indexador_alvo == "auto": 
-                    idx["strikes"] = idx.get("strikes", 0) + 1
-                    houve_alteracao = True
-        except:
-            if indexador_alvo == "auto": 
-                idx["strikes"] = idx.get("strikes", 0) + 1
-                houve_alteracao = True
-                
-        if idx.get("strikes", 0) >= MAX_STRIKES and idx.get("ativo", True):
-            idx["ativo"] = False
-            houve_alteracao = True
-            if ADMIN_ID: bot.send_message(ADMIN_ID, f"⚠️ O indexador {idx['nome']} falhou repetidas vezes e foi desativado.")
-            
-    if houve_alteracao: guardar_indexadores(indexadores)
+        except: continue
     return None, None, None
 
 # ==========================================
-# RENOVAÇÃO EM LOTE (BACKGROUND THREAD)
+# RENOVAÇÃO EM LOTE
 # ==========================================
 def tarefa_renovacao_lote(chat_id, mensagem_id, escopo, indexador_escolhido):
     hist = carregar_historico()
@@ -306,7 +316,7 @@ def pesquisar_tmdb(message, tipo_busca):
     except Exception as e: bot.send_message(message.chat.id, f"❌ Erro: {e}")
 
 # ==========================================
-# CALLBACKS E LÓGICA DE EDIÇÃO
+# CALLBACKS & LÓGICA DE QUALIDADE
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -416,29 +426,61 @@ def callback_handler(call):
         res = requests.get(f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&query={re.sub(r' \(\d{4}\)$', '', titulo)}&language=pt-PT").json().get("results", [])
         if res: callback_handler(call._replace(data=f"s_{res[0]['id']}"))
 
+    # --- SELEÇÃO DE INDEXADOR & SUBMENU DE QUALIDADE PARA FILMES ---
     elif dados.startswith("m_"):
         tmdb_id = dados.split("_")[1]
         imdb_id = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json().get('external_ids', {}).get('imdb_id')
         fontes = verificar_fontes_ativas("movie", imdb_id)
         if not fontes: return bot.edit_message_text("❌ Sem indexadores ativos para este filme.", chat_id, call.message.message_id)
         markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton("🌟 Automático", callback_data=f"run_m_{tmdb_id}_auto"))
-        for f in fontes: markup.add(InlineKeyboardButton(f"✅ {f['nome']}", callback_data=f"run_m_{tmdb_id}_{f['id']}"))
+        markup.add(InlineKeyboardButton("🌟 Automático (Melhor Qualidade)", callback_data=f"q_m_{tmdb_id}_auto"))
+        for f in fontes: markup.add(InlineKeyboardButton(f"✅ {f['nome']}", callback_data=f"q_m_{tmdb_id}_{f['id']}"))
         bot.edit_message_text("👇 Filme encontrado! Escolhe a fonte:", chat_id, call.message.message_id, reply_markup=markup)
 
-    elif dados.startswith("run_m_"):
+    elif dados.startswith("q_m_"):
+        # Apresenta as qualidades disponíveis do filme
         tmdb_id, idx_esc = dados.split("_")[2:4]
         res = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids&language=pt-PT").json()
-        imdb_id, id_nome = res.get('external_ids', {}).get('imdb_id'), f"{limpar_nome(res.get('title', ''))} ({res.get('release_date', '0000')[:4]})"
-        link, idioma, nome_idx = obter_stream_com_idioma("movie", imdb_id, indexador_alvo=idx_esc)
-        if link:
-            pasta = os.path.join(PASTA_BASE, "FILMES", id_nome)
-            os.makedirs(pasta, exist_ok=True)
-            with open(os.path.join(pasta, f"{id_nome}.strm"), "w", encoding="utf-8") as f: f.write(link)
-            registrar_historico("movie", id_nome, nome_idx)
-            bot.edit_message_text(f"✅ *Filme Pronto!*\n🎬 {id_nome}\n🔊 {idioma}\n📡 {nome_idx}", chat_id, call.message.message_id, parse_mode="Markdown")
-        else: bot.edit_message_text("❌ Nenhum link funcional encontrado.", chat_id, call.message.message_id)
+        imdb_id = res.get('external_ids', {}).get('imdb_id')
+        
+        opcoes_q, nome_idx = obter_streams_por_qualidade("movie", imdb_id, indexador_alvo=idx_esc)
+        if not opcoes_q:
+            return bot.edit_message_text("❌ Não foram encontradas qualidades válidas.", chat_id, call.message.message_id)
 
+        # Guardar na sessão temporária
+        chave_sessao = f"m_{chat_id}_{tmdb_id}"
+        SESSAO_QUALIDADES[chave_sessao] = {"qualidades": opcoes_q, "nome_idx": nome_idx, "tmdb_id": tmdb_id}
+
+        markup = InlineKeyboardMarkup(row_width=1)
+        for i, (nome_qual, item) in enumerate(opcoes_q.items()):
+            markup.add(InlineKeyboardButton(f"📽️ {nome_qual}", callback_data=f"runq_m_{chave_sessao}_{i}"))
+
+        bot.edit_message_text(f"⚙️ *Escolhe a Qualidade para Transmissão*\n📡 Fonte: {nome_idx}", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif dados.startswith("runq_m_"):
+        # Executa o download na qualidade escolhida
+        partes = dados.split("_")
+        chave_sessao = f"{partes[2]}_{partes[3]}_{partes[4]}"
+        idx_q = int(partes[5])
+
+        dados_sessao = SESSAO_QUALIDADES.get(chave_sessao)
+        if not dados_sessao:
+            return bot.edit_message_text("❌ Sessão expirada. Tenta pesquisar novamente.", chat_id, call.message.message_id)
+
+        qual_nome = list(dados_sessao["qualidades"].keys())[idx_q]
+        item_escolhido = dados_sessao["qualidades"][qual_nome]
+
+        res = requests.get(f"https://api.themoviedb.org/3/movie/{dados_sessao['tmdb_id']}?api_key={TMDB_API_KEY}&language=pt-PT").json()
+        id_nome = f"{limpar_nome(res.get('title', ''))} ({res.get('release_date', '0000')[:4]})"
+
+        pasta = os.path.join(PASTA_BASE, "FILMES", id_nome)
+        os.makedirs(pasta, exist_ok=True)
+        with open(os.path.join(pasta, f"{id_nome}.strm"), "w", encoding="utf-8") as f: f.write(item_escolhido["url"])
+        
+        registrar_historico("movie", id_nome, item_escolhido["indexador"])
+        bot.edit_message_text(f"✅ *Filme Gerado com Sucesso!*\n🎬 {id_nome}\n🎥 Qualidade: *{qual_nome}*\n📡 Fonte: {item_escolhido['indexador']}", chat_id, call.message.message_id, parse_mode="Markdown")
+
+    # --- SÉRIES E TEMPORADAS ---
     elif dados.startswith("s_"):
         tmdb_id = dados.split("_")[1]
         temporadas = [t for t in requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}").json().get('seasons', []) if t['season_number'] > 0]
