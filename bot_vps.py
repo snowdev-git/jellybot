@@ -271,7 +271,7 @@ def escutar_botoes(message):
             InlineKeyboardButton("🍿 Tudo (Filmes e Séries)", callback_data="lote_tudo")
         )
         bot.send_message(message.chat.id, "⚠️ *Atenção:* Demora alguns minutos.\nO que pretendes renovar?", reply_markup=markup, parse_mode="Markdown")
-    elif texto == "⚙️ Gerir Indexadores":
+    elif texto == "⚙️️ Gerir Indexadores":
         idx_lista = carregar_indexadores()
         markup = InlineKeyboardMarkup(row_width=1)
         for i, idx in enumerate(idx_lista):
@@ -447,18 +447,58 @@ def callback_handler(call):
 
     elif dados.startswith("run_s_"):
         tmdb_id, season_num, ep_count, idx_esc = dados.split("_")[2:6]
-        res = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json()
-        imdb_id, id_nome = res.get('external_ids', {}).get('imdb_id'), f"{limpar_nome(res.get('name', ''))} ({res.get('first_air_date', '0000')[:4]})"
-        pasta_temp = os.path.join(PASTA_BASE, "SERIES", id_nome, f"Season {int(season_num):02d}")
+        season_num_int = int(season_num)
+        
+        # Obter dados completos da série para verificar se existe próxima temporada
+        res_tv = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json()
+        imdb_id = res_tv.get('external_ids', {}).get('imdb_id')
+        id_nome = f"{limpar_nome(res_tv.get('name', ''))} ({res_tv.get('first_air_date', '0000')[:4]})"
+        
+        pasta_temp = os.path.join(PASTA_BASE, "SERIES", id_nome, f"Season {season_num_int:02d}")
         os.makedirs(pasta_temp, exist_ok=True)
         sucessos = 0
+        
         for ep in range(1, int(ep_count) + 1):
-            link, _, nome_idx = obter_stream_com_idioma("series", imdb_id, int(season_num), ep, indexador_alvo=idx_esc)
+            link, _, nome_idx = obter_stream_com_idioma("series", imdb_id, season_num_int, ep, indexador_alvo=idx_esc)
             if link:
-                with open(os.path.join(pasta_temp, f"{id_nome} S{int(season_num):02d}E{ep:02d}.strm"), "w", encoding="utf-8") as f: f.write(link)
-                registrar_historico("series", id_nome, nome_idx, int(season_num), ep)
+                with open(os.path.join(pasta_temp, f"{id_nome} S{season_num_int:02d}E{ep:02d}.strm"), "w", encoding="utf-8") as f: f.write(link)
+                registrar_historico("series", id_nome, nome_idx, season_num_int, ep)
                 sucessos += 1
-        bot.edit_message_text(f"✅ *Concluído!*\n📺 {id_nome} - S{int(season_num):02d}\n📥 {sucessos}/{ep_count} links PT-BR.\n📡 {nome_idx}", chat_id, call.message.message_id, parse_mode="Markdown")
+                
+        # Verificar se existe próxima temporada no TMDB
+        proxima_temp = season_num_int + 1
+        tem_proxima = any(t['season_number'] == proxima_temp for t in res_tv.get('seasons', []))
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        if tem_proxima:
+            # Botão para baixar automaticamente a próxima temporada usando a mesma fonte escolhida
+            markup.add(InlineKeyboardButton(f"➡️ Descarregar Temporada {proxima_temp}", callback_data=f"next_s_{tmdb_id}_{proxima_temp}_{idx_esc}"))
+            
+        texto_final = f"✅ *Concluído!*\n📺 {id_nome} - S{season_num_int:02d}\n📥 {sucessos}/{ep_count} links PT-BR.\n📡 {nome_idx}"
+        if tem_proxima:
+            texto_final += f"\n\n✨ Podes avançar diretamente para a próxima temporada abaixo:"
+            
+        bot.edit_message_text(texto_final, chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif dados.startswith("next_s_"):
+        # Atalho disparado pelo botão de sugestão da temporada seguinte
+        tmdb_id, season_num, idx_esc = dados.split("_")[2:5]
+        res_tv = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}").json()
+        
+        # Procurar a contagem de episódios da temporada seguinte
+        ep_count = 0
+        for t in res_tv.get('seasons', []):
+            if str(t['season_number']) == str(season_num):
+                ep_count = t['episode_count']
+                break
+                
+        if ep_count == 0:
+            return bot.edit_message_text("❌ Não foi possível encontrar os episódios para a próxima temporada.", chat_id, call.message.message_id)
+            
+        # Simular os dados para chamar a rotina de download da temporada
+        call.data = f"run_s_{tmdb_id}_{season_num}_{ep_count}_{idx_esc}"
+        bot.edit_message_text(f"⏳ A iniciar o download da Temporada {season_num}...", chat_id, call.message.message_id)
+        callback_handler(call)
 
 def salvar_url_idx(message, idx_id):
     nova_url = message.text.strip().replace("/manifest.json", "")
