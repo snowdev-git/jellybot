@@ -71,10 +71,11 @@ def registrar_historico(tipo, titulo, indexador, temporada=None, episodio=None):
     if tipo == "movie":
         hist["filmes"][titulo] = {"indexador": indexador}
     else:
-        if titulo not in hist["series"]: hist["series"][titulo] = {}
+        if titulo not in hist["series"] or not isinstance(hist["series"][titulo], dict):
+            hist["series"][titulo] = {}
         temp_str = str(temporada)
-        if not isinstance(hist["series"][titulo], dict): hist["series"][titulo] = {}
-        if temp_str not in hist["series"][titulo]: hist["series"][titulo][temp_str] = {}
+        if temp_str not in hist["series"][titulo] or not isinstance(hist["series"][titulo][temp_str], dict):
+            hist["series"][titulo][temp_str] = {}
         hist["series"][titulo][temp_str][str(episodio)] = {"indexador": indexador}
     guardar_historico(hist)
 
@@ -96,7 +97,6 @@ def verificar_fontes_ativas(tipo, imdb_id, season=None, episode=None):
             if res.status_code == 200:
                 streams = res.json().get("streams", [])
                 validos = [s for s in streams if "url" in s and s["url"].startswith("http")]
-                # Filtra apenas se encontrar indício de áudio em PT-BR
                 pt_validos = []
                 for s in validos:
                     txt = (s.get("title", "") + " " + s.get("name", "")).lower()
@@ -196,7 +196,7 @@ def tarefa_renovacao_lote(chat_id, mensagem_id, escopo, indexador_escolhido):
                     with open(os.path.join(pasta, f"{titulo}.strm"), "w", encoding="utf-8") as f: f.write(link)
                     registrar_historico("movie", titulo, nome_idx)
                     sucessos += 1
-                else: falhas.append(f"[Filme] {titulo} - Sem link PT-BR no indexador")
+                else: falhas.append(f"[Filme] {titulo} - Sem link PT-BR")
             else:
                 ep_sucessos, eps_totais = 0, 0
                 temporadas_hist = hist["series"].get(titulo, {})
@@ -214,7 +214,7 @@ def tarefa_renovacao_lote(chat_id, mensagem_id, escopo, indexador_escolhido):
                 if ep_sucessos > 0:
                     sucessos += 1
                     if ep_sucessos < eps_totais: falhas.append(f"[Série] {titulo} - Incompleta ({ep_sucessos}/{eps_totais})")
-                else: falhas.append(f"[Série] {titulo} - Nenhum link PT-BR encontrado")
+                else: falhas.append(f"[Série] {titulo} - Sem links PT-BR")
         except:
             falhas.append(f"[{'Filme' if tipo == 'movie' else 'Série'}] {titulo} - Erro interno")
         time.sleep(2)
