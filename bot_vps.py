@@ -278,7 +278,7 @@ def escutar_botoes(message):
             estado = "✅" if idx.get('ativo', True) else "❌"
             markup.add(InlineKeyboardButton(f"{estado} {idx['nome']}", callback_data=f"g_idx_{i}"))
         markup.add(InlineKeyboardButton("➕ Adicionar Novo", callback_data="add_idx_1"))
-        bot.send_message(message.chat.id, "⚙️️ *Gestão de Indexadores*\nEscolhe um para editar/remover ou adiciona um novo:", reply_markup=markup, parse_mode="Markdown")
+        bot.send_message(message.chat.id, "⚙ *Gestão de Indexadores*\nEscolhe um para editar/remover ou adiciona um novo:", reply_markup=markup, parse_mode="Markdown")
 
 def pesquisar_tmdb(message, tipo_busca):
     query = message.text
@@ -425,7 +425,8 @@ def callback_handler(call):
         imdb_id, id_nome = res.get('external_ids', {}).get('imdb_id'), f"{limpar_nome(res.get('title', ''))} ({res.get('release_date', '0000')[:4]})"
         link, idioma, nome_idx = obter_stream_com_idioma("movie", imdb_id, indexador_alvo=idx_esc)
         if link:
-            pasta = os.path.join(PASTA_BASE, "Filmes", id_nome)
+            # CORRIGIDO PARA USAR FILMES (EM MAIÚSCULAS)
+            pasta = os.path.join(PASTA_BASE, "FILMES", id_nome)
             os.makedirs(pasta, exist_ok=True)
             with open(os.path.join(pasta, f"{id_nome}.strm"), "w", encoding="utf-8") as f: f.write(link)
             registrar_historico("movie", id_nome, nome_idx)
@@ -453,7 +454,8 @@ def callback_handler(call):
         tmdb_id, season_num, ep_count, idx_esc = dados.split("_")[2:6]
         res = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json()
         imdb_id, id_nome = res.get('external_ids', {}).get('imdb_id'), f"{limpar_nome(res.get('name', ''))} ({res.get('first_air_date', '0000')[:4]})"
-        pasta_temp = os.path.join(PASTA_BASE, "Series", id_nome, f"Season {int(season_num):02d}")
+        # CORRIGIDO PARA USAR SERIES (EM MAIÚSCULAS)
+        pasta_temp = os.path.join(PASTA_BASE, "SERIES", id_nome, f"Season {int(season_num):02d}")
         os.makedirs(pasta_temp, exist_ok=True)
         sucessos = 0
         for ep in range(1, int(ep_count) + 1):
