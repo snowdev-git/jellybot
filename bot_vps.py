@@ -5,6 +5,7 @@ import os
 import re
 import json
 import time
+import shutil
 
 # ==========================================
 # CONFIGURAÇÕES DEFINITIVAS
@@ -27,7 +28,8 @@ INDEXADORES = [
 MAX_STRIKES = 5
 
 DIRETORIO_SCRIPT = os.path.dirname(os.path.abspath(__file__))
-PASTA_BASE = os.path.join(DIRETORIO_SCRIPT, "Jellyfin_Local")
+# Usando a pasta global do CasaOS para o Jellyfin detetar automaticamente
+PASTA_BASE = "/Media/Jellyfin_Local"
 HISTORICO_ARQUIVO = os.path.join(DIRETORIO_SCRIPT, "historico.json")
 
 # ==========================================
@@ -38,11 +40,8 @@ def carregar_historico():
         try:
             with open(HISTORICO_ARQUIVO, "r", encoding="utf-8") as f:
                 dados = json.load(f)
-                # Garante obrigatoriamente que filmes e series são dicionários
-                if not isinstance(dados.get("filmes"), dict): 
-                    dados["filmes"] = {}
-                if not isinstance(dados.get("series"), dict): 
-                    dados["series"] = {}
+                if not isinstance(dados.get("filmes"), dict): dados["filmes"] = {}
+                if not isinstance(dados.get("series"), dict): dados["series"] = {}
                 return dados
         except:
             pass
@@ -218,7 +217,7 @@ def callback_handler(call):
     chat_id = call.message.chat.id
     dados = call.data
     
-    # --- BIBLIOTECA ---
+    # --- BIBLIOTECA (FILMES) ---
     if dados == "hist_menu_filmes":
         hist = carregar_historico()
         filmes = list(hist.get("filmes", {}).keys())
@@ -227,6 +226,7 @@ def callback_handler(call):
         for i, f in enumerate(filmes[:50]): markup.add(InlineKeyboardButton(f"🎬 {f}", callback_data=f"lib_m_{i}"))
         bot.edit_message_text("🎬 *Os teus Filmes:*", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
+    # --- BIBLIOTECA (SÉRIES) ---
     elif dados == "hist_menu_series":
         hist = carregar_historico()
         series = list(hist.get("series", {}).keys())
@@ -235,7 +235,20 @@ def callback_handler(call):
         for i, s in enumerate(series[:50]): markup.add(InlineKeyboardButton(f"📺 {s}", callback_data=f"lib_s_{i}"))
         bot.edit_message_text("📺 *As tuas Séries:*", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
+    # --- OPÇÕES SOBRE UM FILME DA BIBLIOTECA (RENOVAR OU APAGAR) ---
     elif dados.startswith("lib_m_"):
+        idx = int(dados.split("_")[2])
+        titulo_completo = list(carregar_historico().get("filmes", {}).keys())[idx]
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🔄 Renovar Link", callback_data=f"ren_m_{idx}"),
+            InlineKeyboardButton("🗑️ Apagar Filme", callback_data=f"del_m_{idx}")
+        )
+        bot.edit_message_text(f"🎬 *{titulo_completo}*\nO que pretendes fazer?", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    # --- EXECUTAR RENOVAÇÃO DE FILME ---
+    elif dados.startswith("ren_m_"):
         idx = int(dados.split("_")[2])
         titulo_completo = list(carregar_historico().get("filmes", {}).keys())[idx]
         bot.edit_message_text(f"⏳ A ligar '{titulo_completo}' aos indexadores...", chat_id, call.message.message_id)
@@ -250,7 +263,41 @@ def callback_handler(call):
         else:
             bot.edit_message_text("❌ Erro no TMDB.", chat_id, call.message.message_id)
 
+    # --- EXECUTAR APAGAR FILME ---
+    elif dados.startswith("del_m_"):
+        idx = int(dados.split("_")[2])
+        hist = carregar_historico()
+        filmes_lista = list(hist.get("filmes", {}).keys())
+        if idx < len(filmes_lista):
+            titulo_completo = filmes_lista[idx]
+            
+            # Apagar pasta física
+            pasta_filme = os.path.join(PASTA_BASE, "Filmes", titulo_completo)
+            if os.path.exists(pasta_filme):
+                shutil.rmtree(pasta_filme, ignore_errors=True)
+                
+            # Remover do histórico
+            del hist["filmes"][titulo_completo]
+            guardar_historico(hist)
+            
+            bot.edit_message_text(f"🗑️ *Filme Apagado com Sucesso!*\n🎬 {titulo_completo}", chat_id, call.message.message_id, parse_mode="Markdown")
+        else:
+            bot.edit_message_text("❌ Erro ao localizar o filme.", chat_id, call.message.message_id)
+
+    # --- OPÇÕES SOBRE UMA SÉRIE DA BIBLIOTECA (RENOVAR OU APAGAR) ---
     elif dados.startswith("lib_s_"):
+        idx = int(dados.split("_")[2])
+        titulo_completo = list(carregar_historico().get("series", {}).keys())[idx]
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🔄 Renovar / Temporadas", callback_data=f"ren_s_{idx}"),
+            InlineKeyboardButton("🗑️ Apagar Série Inteira", callback_data=f"del_s_{idx}")
+        )
+        bot.edit_message_text(f"📺 *{titulo_completo}*\nO que pretendes fazer?", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    # --- EXECUTAR RENOVAÇÃO DE SÉRIE ---
+    elif dados.startswith("ren_s_"):
         idx = int(dados.split("_")[2])
         titulo_completo = list(carregar_historico().get("series", {}).keys())[idx]
         bot.edit_message_text(f"⏳ A carregar '{titulo_completo}'...", chat_id, call.message.message_id)
@@ -264,6 +311,27 @@ def callback_handler(call):
             callback_handler(call)
         else:
             bot.edit_message_text("❌ Erro no TMDB.", chat_id, call.message.message_id)
+
+    # --- EXECUTAR APAGAR SÉRIE INTEIRA ---
+    elif dados.startswith("del_s_"):
+        idx = int(dados.split("_")[2])
+        hist = carregar_historico()
+        series_lista = list(hist.get("series", {}).keys())
+        if idx < len(series_lista):
+            titulo_completo = series_lista[idx]
+            
+            # Apagar pasta física
+            pasta_serie = os.path.join(PASTA_BASE, "Series", titulo_completo)
+            if os.path.exists(pasta_serie):
+                shutil.rmtree(pasta_serie, ignore_errors=True)
+                
+            # Remover do histórico
+            del hist["series"][titulo_completo]
+            guardar_historico(hist)
+            
+            bot.edit_message_text(f"🗑️ *Série Apagada com Sucesso!*\n📺 {titulo_completo}", chat_id, call.message.message_id, parse_mode="Markdown")
+        else:
+            bot.edit_message_text("❌ Erro ao localizar a série.", chat_id, call.message.message_id)
 
     # --- MOSTRAR COLEÇÃO (FILMES SEGUINTES) ---
     elif dados.startswith("col_"):
