@@ -1,0 +1,17 @@
+[
+    {
+        "nome": "FrostStream",
+        "url": "https://froststream.cloutteam.com",
+        "ativo": true
+    },
+    {
+        "nome": "MagnetFlix",
+        "url": "https://magnetflix.magnetbr.online",
+        "ativo": true
+    },
+    {
+        "nome": "FenixFlix",
+        "url": "https://fenixflix.fenixhub.online",
+        "ativo": true
+    }
+]

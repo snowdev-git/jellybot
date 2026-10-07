@@ -10,7 +10,7 @@ import threading
 import subprocess
 
 # ==========================================
-# CONFIGURAÇÕES DEFINITIVAS
+# CONFIGURAÇÕES
 # ==========================================
 TELEGRAM_TOKEN = "8994962973:AAHSi_9Pu952FyaA6mc_Ugcqls9_htrkze0"
 TMDB_API_KEY = "3755e8749d79c3d9b395e2041c281a52"
@@ -19,17 +19,15 @@ ADMIN_ID = 1289593084
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 DIRETORIO_SCRIPT = os.path.dirname(os.path.abspath(__file__))
-PASTA_BASE = "/DATA/Media" 
+PASTA_BASE = os.path.join(DIRETORIO_SCRIPT, "Media")
 HISTORICO_ARQUIVO = os.path.join(DIRETORIO_SCRIPT, "historico.json")
 INDEXADORES_ARQUIVO = os.path.join(DIRETORIO_SCRIPT, "indexadores.json")
 
-# Limite máximo da pasta de cache (em GB)
 LIMITE_CACHE_GB = 30 
-
-SESSAO_QUALIDADES = {}
+SESSAO_OPCOES = {}
 
 # ==========================================
-# GESTÃO DE DADOS & CACHE AUTOMÁTICA
+# UTILITÁRIOS E GERENCIAMENTO DE CACHE
 # ==========================================
 def carregar_indexadores():
     if os.path.exists(INDEXADORES_ARQUIVO):
@@ -39,7 +37,7 @@ def carregar_indexadores():
         except: pass
     padrao = [
         {"nome": "FrostStream", "url": "https://froststream.cloutteam.com", "ativo": True},
-        {"nome": "MagnetFlix", "url": "https://magnetflix.magnetbr.online/qualities%3D4k%2C1080p%2C720p%2Csd%7Caudio%3Ddublado%2Clegendado%7Ccatalogs%3Dpopulares_movie%2Cpopulares_series%2Crecentes_servidor_movie%2Crecentes_servidor_series%2Cemalta_movie%2Cemalta_series", "ativo": True},
+        {"nome": "MagnetFlix", "url": "https://magnetflix.magnetbr.online", "ativo": True},
         {"nome": "FenixFlix", "url": "https://fenixflix.fenixhub.online", "ativo": True}
     ]
     guardar_indexadores(padrao)
@@ -66,268 +64,378 @@ def guardar_historico(historico):
 
 def registrar_historico(tipo, titulo, indexador, tamanho_bytes=0):
     hist = carregar_historico()
-    if tipo == "movie":
-        hist["filmes"][titulo] = {"indexador": indexador, "acesso": time.time(), "tamanho": tamanho_bytes}
+    cat = "filmes" if tipo == "movie" else "series"
+    hist[cat][titulo] = {"indexador": indexador, "acesso": time.time(), "tamanho": tamanho_bytes}
     guardar_historico(hist)
 
 def limpar_nome(nome):
-    return re.sub(r'[\\/*?:"<>|]', "", str(nome))
+    return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
-def calcular_tamanho_pasta(caminho):
-    total = 0
-    for root, dirs, files in os.walk(caminho):
-        for f in files:
-            fp = os.path.join(root, f)
-            if not os.path.islink(fp):
-                total += os.path.getsize(fp)
-    return total
+def obter_info_disco():
+    try:
+        total, used, free = shutil.disk_usage(PASTA_BASE)
+        free_gb = round(free / (1024**3), 2)
+        usado_gb = round(used / (1024**3), 2)
+        return free_gb, usado_gb
+    except:
+        return 0.0, 0.0
 
-def limpar_cache_disco(tamanho_novo_bytes=0):
-    """
-    Verifica o tamanho total da pasta /DATA/Media.
-    Se ultrapassar LIMITE_CACHE_GB, apaga os ficheiros mais antigos (LRU).
-    """
-    limite_bytes = LIMITE_CACHE_GB * 1024 * 1024 * 1024
-    tamanho_atual = calcular_tamanho_pasta(PASTA_BASE)
-    
-    if (tamanho_atual + tamanho_novo_bytes) <= limite_bytes:
-        return
-
-    hist = carregar_historico()
-    # Junta filmes para ordenar por tempo de último acesso
-    itens = []
-    for titulo, info in hist.get("filmes", {}).items():
-        pasta = os.path.join(PASTA_BASE, "FILMES", titulo)
-        if os.path.exists(pasta):
-            itens.append(("movie", titulo, pasta, info.get("acesso", 0)))
-
-    # Ordena dos mais antigos para os mais recentes
-    itens.sort(key=lambda x: x[3])
-
-    for tipo, titulo, caminho_pasta, _ in itens:
-        if (calcular_tamanho_pasta(PASTA_BASE) + tamanho_novo_bytes) <= limite_bytes:
-            break
-        shutil.rmtree(caminho_pasta, ignore_errors=True)
-        if tipo == "movie" and titulo in hist["filmes"]:
-            del hist["filmes"][titulo]
-    
-    guardar_historico(hist)
-
-# ==========================================
-# MOTOR DE BUSCA & DOWNLOAD COM ARIA2C
-# ==========================================
 def extrair_qualidade(texto):
     txt = texto.lower()
-    if "4k" in txt or "2160p" in txt: return "4K / 2160p 🌟"
-    elif "1080p" in txt or "fhd" in txt: return "1080p Full HD 🎬"
-    elif "720p" in txt or "hd" in txt: return "720p HD ⚡"
-    return "Qualidade Padrão 📺"
+    termos_dub = ["dub", "dublado", "dual", "pt-br", "ptbr", "br", "pt", "nacional", "multi", "latino"]
+    is_dub = any(termo in txt for termo in termos_dub)
+    audio = "DUBLADO 🇧🇷" if is_dub else "LEGENDADO 🔤"
 
-def verificar_fontes_ativas(tipo, imdb_id):
-    fontes_encontradas = []
-    headers = {"User-Agent": "Mozilla/5.0"}
+    if "4k" in txt or "2160p" in txt:
+        return f"4K 🌟 ({audio})"
+    elif "1080p" in txt or "fhd" in txt:
+        return f"1080p FHD 🎬 ({audio})"
+    elif "720p" in txt or "hd" in txt:
+        return f"720p HD ⚡ ({audio})"
+    return f"SD 📺 ({audio})"
+
+# ==========================================
+# MOTOR DE BUSCA (FILMES E SÉRIES)
+# ==========================================
+def buscar_todas_as_opcoes(tipo, imdb_id, season=None, episode=None):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     indexadores = carregar_indexadores()
-    for idx_pos, idx in enumerate(indexadores):
+    resultados = []
+
+    print(f"\n🔍 [DEBUG] Buscando {tipo} (IMDB: {imdb_id}) em todos os indexadores...")
+
+    for idx in indexadores:
         if not idx.get("ativo", True): continue
-        url = f"{idx['url']}/stream/movie/{imdb_id}.json" if tipo == "movie" else f"{idx['url']}/stream/series/{imdb_id}.json"
+        if tipo == "movie":
+            url = f"{idx['url']}/stream/movie/{imdb_id}.json"
+        else:
+            url = f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
+
         try:
             res = requests.get(url, headers=headers, timeout=8)
             if res.status_code == 200:
                 streams = res.json().get("streams", [])
                 validos = [s for s in streams if "url" in s and s["url"].startswith("http")]
-                if validos: fontes_encontradas.append({"id": idx_pos, "nome": idx["nome"]})
-        except: continue
-    return fontes_encontradas
+                
+                for s in validos:
+                    txt_label = (s.get("title", "") + " " + s.get("name", ""))
+                    qual = extrair_qualidade(txt_label)
 
-def obter_streams_por_qualidade(tipo, imdb_id, indexador_alvo="auto"):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    indexadores = carregar_indexadores()
+                    resultados.append({
+                        "indexador": idx["nome"],
+                        "qualidade": qual,
+                        "url": s["url"],
+                        "info": txt_label
+                    })
+        except Exception as e:
+            print(f"   └─ Falha em {idx['nome']}: {e}")
 
-    for idx_pos, idx in enumerate(indexadores):
-        if indexador_alvo != "auto" and str(idx_pos) != str(indexador_alvo): continue
-        if not idx.get("ativo", True) and indexador_alvo == "auto": continue
-        
-        url = f"{idx['url']}/stream/movie/{imdb_id}.json"
-        try:
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                streams = res.json().get("streams", [])
-                validos = [s for s in streams if "url" in s and s["url"].startswith("http")]
-                if validos:
-                    opcoes_qualidade = {}
-                    for s in validos:
-                        txt_label = (s.get("title", "") + " " + s.get("name", ""))
-                        qual = extrair_qualidade(txt_label)
-                        if qual not in opcoes_qualidade:
-                            opcoes_qualidade[qual] = {"url": s["url"], "indexador": idx["nome"], "info": txt_label}
-                    return opcoes_qualidade, idx["nome"]
-        except: continue
-    return {}, None
-
-def executar_download_aria2(url, pasta_destino, nome_arquivo, chat_id, message_id):
-    """
-    Executa o download direto em background via aria2c para a pasta local da VPS
-    """
-    limpar_cache_disco()
-    os.makedirs(pasta_destino, exist_ok=True)
-    caminho_final = os.path.join(pasta_destino, nome_arquivo)
-
-    cmd = [
-        "aria2c",
-        "-x", "8", "-s", "8",
-        "-d", pasta_destino,
-        "-o", nome_arquivo,
-        "--allow-overwrite=true",
-        url
-    ]
-
-    try:
-        bot.edit_message_text(f"⏳ *A iniciar download real em background...*\n📁 Ficheiro: `{nome_arquivo}`", chat_id, message_id, parse_mode="Markdown")
-        processo = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        
-        # Aguarda o término do download
-        stdout, _ = processo.communicate()
-
-        if processo.returncode == 0 and os.path.exists(caminho_final):
-            tam_mb = round(os.path.getsize(caminho_final) / (1024 * 1024), 2)
-            registrar_historico("movie", nome_arquivo.replace(".mp4", "").replace(".mkv", ""), "aria2c", os.path.getsize(caminho_final))
-            bot.edit_message_text(f"🎉 *Download Concluído com Sucesso!*\n🎬 `{nome_arquivo}`\n📦 Tamanho: *{tam_mb} MB*\n\n👉 *Já disponível no Jellyfin em Direct Play!*", chat_id, message_id, parse_mode="Markdown")
-        else:
-            bot.edit_message_text("❌ Falha ao descarregar o ficheiro real da fonte.", chat_id, message_id)
-    except Exception as e:
-        bot.edit_message_text(f"❌ Erro durante o download: {e}", chat_id, message_id)
+    return resultados
 
 # ==========================================
-# MENUS PRINCIPAIS
+# MOTOR DE DOWNLOAD E NOTIFICAÇÃO
+# ==========================================
+def monitorar_progresso(caminho_final, chat_id, message_id, stop_event):
+    ultimo_tamanho = 0
+    while not stop_event.is_set():
+        time.sleep(5)
+        if os.path.exists(caminho_final):
+            tamanho_atual = os.path.getsize(caminho_final)
+            if tamanho_atual != ultimo_tamanho and tamanho_atual > 0:
+                tam_mb = round(tamanho_atual / (1024 * 1024), 2)
+                try:
+                    bot.edit_message_text(
+                        f"⏳ *Download em andamento...*\n📁 Arquivo: `{os.path.basename(caminho_final)}`\n📦 *Baixado:* `{tam_mb} MB`",
+                        chat_id, message_id, parse_mode="Markdown"
+                    )
+                except: pass
+                ultimo_tamanho = tamanho_atual
+
+def executar_download(url, pasta_destino, nome_arquivo, tipo_mídia, chat_id, message_id):
+    try:
+        os.makedirs(pasta_destino, exist_ok=True)
+        caminho_final = os.path.join(pasta_destino, nome_arquivo)
+
+        aria2_disponivel = shutil.which("aria2c") is not None
+        bot.edit_message_text(f"⏳ *Conectando à fonte...*\n📁 Arquivo: `{nome_arquivo}`", chat_id, message_id, parse_mode="Markdown")
+
+        sucesso = False
+        log_saida = ""
+
+        # Inicia thread de monitoramento do tamanho do arquivo
+        stop_event = threading.Event()
+        t_monitor = threading.Thread(target=monitorar_progresso, args=(caminho_final, chat_id, message_id, stop_event))
+        t_monitor.start()
+
+        if aria2_disponivel:
+            cmd = [
+                "aria2c",
+                "-x", "16", "-s", "16", "-k", "1M",
+                "--connect-timeout=15",
+                "--timeout=30",
+                "--max-tries=3",
+                "-d", pasta_destino,
+                "-o", nome_arquivo,
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "--check-certificate=false",
+                "--allow-overwrite=true",
+                url
+            ]
+            try:
+                processo = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                log_saida, _ = processo.communicate()
+                if processo.returncode == 0 and os.path.exists(caminho_final):
+                    sucesso = True
+            except Exception as e: log_saida = str(e)
+        else:
+            try:
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                with requests.get(url, headers=headers, stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    with open(caminho_final, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=1024*1024):
+                            f.write(chunk)
+                if os.path.exists(caminho_final): sucesso = True
+            except Exception as e: log_saida = str(e)
+
+        # Encerra o monitoramento de progresso
+        stop_event.set()
+        t_monitor.join()
+
+        if sucesso and os.path.exists(caminho_final) and os.path.getsize(caminho_final) > 1000000:
+            tam_bytes = os.path.getsize(caminho_final)
+            tam_mb = round(tam_bytes / (1024 * 1024), 2)
+            tam_gb = round(tam_bytes / (1024 ** 3), 2)
+            tam_formatado = f"{tam_gb} GB" if tam_gb >= 1 else f"{tam_mb} MB"
+
+            registrar_historico(tipo_mídia, nome_arquivo, "aria2c" if aria2_disponivel else "Python", tam_bytes)
+            livre_gb, _ = obter_info_disco()
+
+            msg_sucesso = (
+                f"🎉 *Download Concluído com Sucesso!*\n\n"
+                f"🎬 *Arquivo:* `{nome_arquivo}`\n"
+                f"📦 *Tamanho Final:* *{tam_formatado}*\n"
+                f"💾 *Espaço Livre Restante:* *{livre_gb} GB*\n\n"
+                f"👉 *Pronto no Jellyfin!*"
+            )
+            bot.edit_message_text(msg_sucesso, chat_id, message_id, parse_mode="Markdown")
+        else:
+            if os.path.exists(caminho_final) and os.path.getsize(caminho_final) <= 1000000:
+                os.remove(caminho_final) # Apaga arquivo com erro ou incompleto
+            bot.edit_message_text(f"❌ *Link travado ou fonte indisponível.*\n\nTente selecionar outra opção na lista do filme.", chat_id, message_id, parse_mode="Markdown")
+    except Exception as err_global:
+        print(f"❌ Erro na thread de download: {err_global}")
+        try: bot.send_message(chat_id, f"❌ Erro crítico no download: `{err_global}`", parse_mode="Markdown")
+        except: pass
+
+# ==========================================
+# HANDLERS DO TELEGRAM & GERENCIAMENTO
 # ==========================================
 def menu_principal():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        KeyboardButton("🎬 Novo Filme"), KeyboardButton("📚 Minha Biblioteca"),
-        KeyboardButton("📊 Status da Cache"), KeyboardButton("⚙️ Gerir Indexadores")
+        KeyboardButton("🎬 Novo Filme"), KeyboardButton("📺 Nova Série"),
+        KeyboardButton("🗑️ Gerenciar/Apagar"), KeyboardButton("📊 Espaço no Disco")
     )
     return markup
 
 @bot.message_handler(commands=['start'])
 def comando_start(message):
-    if ADMIN_ID and message.chat.id != ADMIN_ID: return bot.send_message(message.chat.id, "⛔ Acesso negado.")
-    bot.send_message(message.chat.id, "🍿 *Jellyfin Bot com Download Local Ativo!*", reply_markup=menu_principal(), parse_mode="Markdown")
+    livre_gb, _ = obter_info_disco()
+    bot.send_message(
+        message.chat.id, 
+        f"🍿 *Jellyfin Bot Ativo!*\n💾 Espaço Livre Atual: *{livre_gb} GB*\n\nEscolha uma opção no menu abaixo:", 
+        reply_markup=menu_principal(), 
+        parse_mode="Markdown"
+    )
 
 @bot.message_handler(func=lambda msg: True)
 def escutar_botoes(message):
-    if ADMIN_ID and message.chat.id != ADMIN_ID: return
     texto = message.text
     if texto == "🎬 Novo Filme":
-        msg = bot.send_message(message.chat.id, "Escreve o nome do filme:")
+        msg = bot.send_message(message.chat.id, "Escreva o nome do filme:")
         bot.register_next_step_handler(msg, pesquisar_tmdb, "movie")
-    elif texto == "📊 Status da Cache":
-        tam_bytes = calcular_tamanho_pasta(PASTA_BASE)
-        tam_gb = round(tam_bytes / (1024 * 1024 * 1024), 2)
-        txt = f"📊 *ESTADO DA CACHE LOCAL*\n\n💾 Espaço Ocupado: *{tam_gb} GB* / {LIMITE_CACHE_GB} GB\n📁 Localização: `/DATA/Media`\n\n*Regra:* Quando atingir {LIMITE_CACHE_GB} GB, o bot apaga automaticamente os filmes mais antigos assistidos."
-        bot.send_message(message.chat.id, txt, parse_mode="Markdown")
-    elif texto == "📚 Minha Biblioteca":
-        filmes = list(carregar_historico().get("filmes", {}).keys())
-        if not filmes: return bot.send_message(message.chat.id, "❌ Sem filmes descarregados na cache.")
-        markup = InlineKeyboardMarkup(row_width=1)
-        for i, f in enumerate(filmes[:50]): markup.add(InlineKeyboardButton(f"🎬 {f}", callback_data=f"lib_m_{i}"))
-        bot.send_message(message.chat.id, "🎬 *Filmes em Cache:*", reply_markup=markup, parse_mode="Markdown")
+    elif texto == "📺 Nova Série":
+        msg = bot.send_message(message.chat.id, "Escreva o nome da série:")
+        bot.register_next_step_handler(msg, pesquisar_tmdb, "tv")
+    elif texto == "📊 Espaço no Disco":
+        livre_gb, usado_gb = obter_info_disco()
+        bot.send_message(message.chat.id, f"📊 *Informações do Disco:*\n\n💾 Espaço Livre: *{livre_gb} GB*\n📁 Espaço Usado: *{usado_gb} GB*", parse_mode="Markdown")
+    elif texto == "🗑️ Gerenciar/Apagar":
+        menu_gerenciar_media(message.chat.id)
 
-def pesquisar_tmdb(message, tipo_busca):
+def menu_gerenciar_media(chat_id):
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🎬 Apagar Filmes", callback_data="mgr_filmes"),
+        InlineKeyboardButton("📺 Apagar Séries", callback_data="mgr_series")
+    )
+    bot.send_message(chat_id, "🗑️ *Gerenciar Armazenamento*\nEscolha a categoria que deseja gerenciar:", reply_markup=markup, parse_mode="Markdown")
+
+def pesquisar_tmdb(message, tipo):
     query = message.text
-    url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={query}&language=pt-PT"
+    url = f"https://api.themoviedb.org/3/search/{tipo}?api_key={TMDB_API_KEY}&query={query}&language=pt-PT"
     try:
         res = requests.get(url).json().get("results", [])[:5]
         if not res: return bot.send_message(message.chat.id, "❌ Nenhum resultado encontrado.")
+        
         markup = InlineKeyboardMarkup(row_width=1)
         for r in res:
-            titulo = r.get('title')
-            ano = str(r.get('release_date', 'N/A'))[:4]
-            markup.add(InlineKeyboardButton(f"🎬 {titulo} ({ano})", callback_data=f"m_{r['id']}"))
-        bot.send_message(message.chat.id, "👇 Escolhe o filme:", reply_markup=markup)
+            titulo = r.get('title') if tipo == 'movie' else r.get('name')
+            data = r.get('release_date') if tipo == 'movie' else r.get('first_air_date')
+            ano = str(data)[:4] if data else "N/A"
+            cb = f"m_{r['id']}" if tipo == 'movie' else f"s_{r['id']}"
+            markup.add(InlineKeyboardButton(f"{'🎬' if tipo=='movie' else '📺'} {titulo} ({ano})", callback_data=cb))
+            
+        bot.send_message(message.chat.id, f"👇 Selecione o {'filme' if tipo=='movie' else 'série'}:", reply_markup=markup)
     except Exception as e: bot.send_message(message.chat.id, f"❌ Erro: {e}")
 
 # ==========================================
-# CALLBACKS & DOWNLOAD LOCAL
+# CALLBACKS & APAGAR MANUAL
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     bot.answer_callback_query(call.id)
     chat_id, dados = call.message.chat.id, call.data
 
-    if dados.startswith("m_"):
+    if dados == "mgr_filmes":
+        pasta_f = os.path.join(PASTA_BASE, "FILMES")
+        itens = [d for d in os.listdir(pasta_f) if os.path.isdir(os.path.join(pasta_f, d))] if os.path.exists(pasta_f) else []
+        if not itens: return bot.edit_message_text("❌ Nenhum filme salvo na cache.", chat_id, call.message.message_id)
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        for idx, f in enumerate(itens[:30]):
+            markup.add(InlineKeyboardButton(f"🗑️ {f}", callback_data=f"del_f_{idx}"))
+        bot.edit_message_text("🎬 *Clique no filme que deseja apagar:*", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif dados.startswith("del_f_"):
+        idx = int(dados.split("_")[2])
+        pasta_f = os.path.join(PASTA_BASE, "FILMES")
+        itens = [d for d in os.listdir(pasta_f) if os.path.isdir(os.path.join(pasta_f, d))]
+        if idx < len(itens):
+            alvo = itens[idx]
+            shutil.rmtree(os.path.join(pasta_f, alvo), ignore_errors=True)
+            bot.edit_message_text(f"✅ *Filme apagado com sucesso!*\n🎬 `{alvo}`", chat_id, call.message.message_id, parse_mode="Markdown")
+
+    elif dados == "mgr_series":
+        pasta_s = os.path.join(PASTA_BASE, "SERIES")
+        itens = [d for d in os.listdir(pasta_s) if os.path.isdir(os.path.join(pasta_s, d))] if os.path.exists(pasta_s) else []
+        if not itens: return bot.edit_message_text("❌ Nenhuma série salva na cache.", chat_id, call.message.message_id)
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        for idx, s in enumerate(itens[:30]):
+            markup.add(InlineKeyboardButton(f"🗑️ {s}", callback_data=f"del_s_{idx}"))
+        bot.edit_message_text("📺 *Clique na série que deseja apagar:*", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif dados.startswith("del_s_"):
+        idx = int(dados.split("_")[2])
+        pasta_s = os.path.join(PASTA_BASE, "SERIES")
+        itens = [d for d in os.listdir(pasta_s) if os.path.isdir(os.path.join(pasta_s, d))]
+        if idx < len(itens):
+            alvo = itens[idx]
+            shutil.rmtree(os.path.join(pasta_s, alvo), ignore_errors=True)
+            bot.edit_message_text(f"✅ *Série apagada com sucesso!*\n📺 `{alvo}`", chat_id, call.message.message_id, parse_mode="Markdown")
+
+    elif dados.startswith("m_"):
         tmdb_id = dados.split("_")[1]
+        bot.edit_message_text("🔍 Consultando indexadores... Aguarde.", chat_id, call.message.message_id)
+        
         imdb_id = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json().get('external_ids', {}).get('imdb_id')
-        fontes = verificar_fontes_ativas("movie", imdb_id)
-        if not fontes: return bot.edit_message_text("❌ Sem indexadores ativos para este filme.", chat_id, call.message.message_id)
-        markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton("🌟 Automático (Melhor Qualidade)", callback_data=f"q_m_{tmdb_id}_auto"))
-        for f in fontes: markup.add(InlineKeyboardButton(f"✅ {f['nome']}", callback_data=f"q_m_{tmdb_id}_{f['id']}"))
-        bot.edit_message_text("👇 Filme encontrado! Escolhe a fonte:", chat_id, call.message.message_id, reply_markup=markup)
+        if not imdb_id: return bot.edit_message_text("❌ Sem IMDB ID.", chat_id, call.message.message_id)
 
-    elif dados.startswith("q_m_"):
-        tmdb_id, idx_esc = dados.split("_")[2:4]
-        res = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids&language=pt-PT").json()
-        imdb_id = res.get('external_ids', {}).get('imdb_id')
+        opcoes = buscar_todas_as_opcoes("movie", imdb_id)
+        if not opcoes: return bot.edit_message_text("❌ Nenhum link encontrado.", chat_id, call.message.message_id)
+
+        chave = f"m_{chat_id}_{tmdb_id}"
+        SESSAO_OPCOES[chave] = {"opcoes": opcoes, "tmdb_id": tmdb_id, "tipo": "movie"}
+
+        markup = InlineKeyboardMarkup(row_width=1)
+        for i, opt in enumerate(opcoes[:5]):
+            btn_txt = f"[{opt['indexador']}] {opt['qualidade']}"
+            markup.add(InlineKeyboardButton(btn_txt, callback_data=f"down_{chave}_{i}"))
+
+        bot.edit_message_text(f"🍿 *Melhores Opções Encontradas ({len(opcoes[:5])}):*\nEscolha a versão para baixar:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif dados.startswith("s_"):
+        tmdb_id = dados.split("_")[1]
+        res = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&language=pt-PT").json()
+        seasons = res.get("seasons", [])
         
-        opcoes_q, nome_idx = obter_streams_por_qualidade("movie", imdb_id, indexador_alvo=idx_esc)
-        if not opcoes_q:
-            return bot.edit_message_text("❌ Não foram encontradas qualidades válidas.", chat_id, call.message.message_id)
+        markup = InlineKeyboardMarkup(row_width=2)
+        for s in seasons:
+            if s.get("season_number", 0) > 0:
+                markup.add(InlineKeyboardButton(f"Temporada {s['season_number']}", callback_data=f"ep_{tmdb_id}_{s['season_number']}"))
+        
+        bot.edit_message_text(f"📺 *{res.get('name')}*\nEscolha a Temporada:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-        chave_sessao = f"m_{chat_id}_{tmdb_id}"
-        SESSAO_QUALIDADES[chave_sessao] = {"qualidades": opcoes_q, "nome_idx": nome_idx, "tmdb_id": tmdb_id}
+    elif dados.startswith("ep_"):
+        tmdb_id, season = dados.split("_")[1:3]
+        res = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}?api_key={TMDB_API_KEY}&language=pt-PT").json()
+        episodes = res.get("episodes", [])
+
+        markup = InlineKeyboardMarkup(row_width=3)
+        botoes = [InlineKeyboardButton(f"EP {ep['episode_number']}", callback_data=f"seach_ep_{tmdb_id}_{season}_{ep['episode_number']}") for ep in episodes]
+        for i in range(0, len(botoes), 3): markup.row(*botoes[i:i+3])
+
+        bot.edit_message_text(f"📺 *Temporada {season}*\nEscolha o Episódio:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif dados.startswith("seach_ep_"):
+        tmdb_id, season, ep = dados.split("_")[2:5]
+        bot.edit_message_text(f"🔍 Consultando fontes para S{int(season):02d}E{int(ep):02d}... Aguarde.", chat_id, call.message.message_id)
+
+        imdb_id = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=external_ids").json().get('external_ids', {}).get('imdb_id')
+        opcoes = buscar_todas_as_opcoes("series", imdb_id, season, ep)
+
+        if not opcoes: return bot.edit_message_text("❌ Nenhum link encontrado para este episódio.", chat_id, call.message.message_id)
+
+        chave = f"s_{chat_id}_{tmdb_id}_{season}_{ep}"
+        SESSAO_OPCOES[chave] = {"opcoes": opcoes, "tmdb_id": tmdb_id, "season": season, "ep": ep, "tipo": "series"}
 
         markup = InlineKeyboardMarkup(row_width=1)
-        for i, (nome_qual, item) in enumerate(opcoes_q.items()):
-            markup.add(InlineKeyboardButton(f"📥 Descarregar {nome_qual}", callback_data=f"runq_m_{chave_sessao}_{i}"))
+        for i, opt in enumerate(opcoes[:5]):
+            btn_txt = f"[{opt['indexador']}] {opt['qualidade']}"
+            markup.add(InlineKeyboardButton(btn_txt, callback_data=f"down_{chave}_{i}"))
 
-        bot.edit_message_text(f"⚙️ *Escolhe a Qualidade para Download Local*\n📡 Fonte: {nome_idx}", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.edit_message_text(f"📺 *Opções para S{int(season):02d}E{int(ep):02d}:*\nEscolha a versão para baixar:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-    elif dados.startswith("runq_m_"):
+    elif dados.startswith("down_"):
         partes = dados.split("_")
-        chave_sessao = f"{partes[2]}_{partes[3]}_{partes[4]}"
-        idx_q = int(partes[5])
-
-        dados_sessao = SESSAO_QUALIDADES.get(chave_sessao)
-        if not dados_sessao:
-            return bot.edit_message_text("❌ Sessão expirada. Tenta pesquisar novamente.", chat_id, call.message.message_id)
-
-        qual_nome = list(dados_sessao["qualidades"].keys())[idx_q]
-        item_escolhido = dados_sessao["qualidades"][qual_nome]
-
-        res = requests.get(f"https://api.themoviedb.org/3/movie/{dados_sessao['tmdb_id']}?api_key={TMDB_API_KEY}&language=pt-PT").json()
-        id_nome = f"{limpar_nome(res.get('title', ''))} ({res.get('release_date', '0000')[:4]})"
-
-        pasta_destino = os.path.join(PASTA_BASE, "FILMES", id_nome)
+        tipo = partes[1]
         
-        # Determina a extensão (.mp4 por padrão para Direct Play)
-        ext = ".mp4" if ".mp4" in item_escolhido["url"].lower() else ".mkv"
-        nome_arquivo = f"{id_nome}{ext}"
+        if tipo == "m":
+            chave = f"{partes[1]}_{partes[2]}_{partes[3]}"
+            idx_opt = int(partes[4])
+        else:
+            chave = f"{partes[1]}_{partes[2]}_{partes[3]}_{partes[4]}_{partes[5]}"
+            idx_opt = int(partes[6])
 
-        # Dispara o download em thread separada para não travar o bot
+        dados_sessao = SESSAO_OPCOES.get(chave)
+        if not dados_sessao: return bot.edit_message_text("❌ Sessão expirada.", chat_id, call.message.message_id)
+
+        item = dados_sessao["opcoes"][idx_opt]
+        ext = ".mp4" if ".mp4" in item["url"].lower() else ".mkv"
+
+        if dados_sessao["tipo"] == "movie":
+            res = requests.get(f"https://api.themoviedb.org/3/movie/{dados_sessao['tmdb_id']}?api_key={TMDB_API_KEY}&language=pt-PT").json()
+            nome_limpo = limpar_nome(res.get('title', 'Filme'))
+            ano = str(res.get('release_date', '0000'))[:4]
+            pasta_dest = os.path.join(PASTA_BASE, "FILMES", f"{nome_limpo} ({ano})")
+            nome_file = f"{nome_limpo} ({ano}){ext}"
+        else:
+            res = requests.get(f"https://api.themoviedb.org/3/tv/{dados_sessao['tmdb_id']}?api_key={TMDB_API_KEY}&language=pt-PT").json()
+            nome_limpo = limpar_nome(res.get('name', 'Serie'))
+            season_num = int(dados_sessao['season'])
+            ep_num = int(dados_sessao['ep'])
+            pasta_dest = os.path.join(PASTA_BASE, "SERIES", nome_limpo, f"Season {season_num:02d}")
+            nome_file = f"{nome_limpo} S{season_num:02d}E{ep_num:02d}{ext}"
+
         threading.Thread(
-            target=executar_download_aria2,
-            args=(item_escolhido["url"], pasta_destino, nome_arquivo, chat_id, call.message.message_id)
+            target=executar_download,
+            args=(item["url"], pasta_dest, nome_file, dados_sessao["tipo"], chat_id, call.message.message_id)
         ).start()
-
-    elif dados.startswith("lib_m_"):
-        idx = int(dados.split("_")[2])
-        titulo = list(carregar_historico().get("filmes", {}).keys())[idx]
-        markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton("🗑️ Apagar da Cache", callback_data=f"del_m_{idx}"))
-        bot.edit_message_text(f"🎬 *{titulo}*\nO ficheiro está descarregado localmente na tua VPS.", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
-    elif dados.startswith("del_m_"):
-        idx = int(dados.split("_")[2])
-        hist = carregar_historico()
-        titulo = list(hist.get("filmes", {}).keys())[idx]
-        shutil.rmtree(os.path.join(PASTA_BASE, "FILMES", titulo), ignore_errors=True)
-        del hist["filmes"][titulo]
-        guardar_historico(hist)
-        bot.edit_message_text(f"🗑️ *Filme Apagado da Cache!*\n🎬 {titulo}", chat_id, call.message.message_id, parse_mode="Markdown")
 
 if __name__ == "__main__":
     os.makedirs(os.path.join(PASTA_BASE, "FILMES"), exist_ok=True)
     os.makedirs(os.path.join(PASTA_BASE, "SERIES"), exist_ok=True)
-    while True:
-        try: bot.polling(none_stop=True, timeout=60)
-        except Exception as e: time.sleep(5)
+    print("🚀 Bot atualizado com contador de progresso e timeout!")
+    bot.polling(none_stop=True)
