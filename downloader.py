@@ -8,14 +8,14 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
-# Limite estrito do Telegram para upload (2 GB em bytes)
-LIMITE_TELEGRAM_BYTES = 2 * 1024 * 1024 * 1024  # 2.147.483.648 bytes (~2,00 GB)
+# Limite estrito do Telegram para upload (2 GB)
+LIMITE_TELEGRAM_BYTES = 2 * 1024 * 1024 * 1024
 
 # Assinaturas (Magic Bytes) válidas para vídeos
 VIDEO_MAGIC_BYTES = [
-    b'\x00\x00\x00\x18ftyp', b'\x00\x00\x00\x20ftyp', b'\x00\x00\x00\x1cftyp', # MP4 / MOV
-    b'\x1a\x45\xdf\xa3',                                                       # MKV / WEBM
-    b'RIFF'                                                                   # AVI
+    b'\x00\x00\x00\x18ftyp', b'\x00\x00\x00\x20ftyp', b'\x00\x00\x00\x1cftyp',
+    b'\x1a\x45\xdf\xa3',
+    b'RIFF'
 ]
 
 def extrair_qualidade(texto: str) -> str:
@@ -90,7 +90,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
 
         headers = {"User-Agent": "Mozilla/5.0"}
 
-        # 1. Download monitorado com verificação antecipada de limite (2 GB)
+        # 1. Download monitorado
         with requests.get(url_fonte, headers=headers, stream=True, timeout=30) as r:
             r.raise_for_status()
             content_type = r.headers.get('Content-Type', '').lower()
@@ -101,12 +101,9 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
             total_length = r.headers.get('content-length')
             total_bytes = int(total_length) if total_length and total_length.isdigit() else 0
 
-            # 🛑 CHECAGEM ANTECIPADA: Aborta antes de baixar se o tamanho for > 2 GB
             if total_bytes > LIMITE_TELEGRAM_BYTES:
                 tamanho_gb = total_bytes / (1024**3)
-                msg_limite = f"Esta mídia tem {tamanho_gb:.2f} GB e ultrapassa o limite máximo de 2.0 GB do Telegram."
-                logger.warning(f"⚠️ [{nome_base}] {msg_limite}")
-                raise ValueError(msg_limite)
+                raise ValueError(f"Esta mídia tem {tamanho_gb:.2f} GB e ultrapassa o limite máximo de 2.0 GB do Telegram.")
 
             downloaded_bytes = 0
             dl_start_time = time.time()
@@ -115,7 +112,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
 
             with open(caminho_temp, 'wb') as f:
                 header_bytes = b""
-                for chunk in r.iter_content(chunk_size=1 * 1024 * 1024):
+                for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
                     if chunk:
                         if len(header_bytes) < 64:
                             header_bytes += chunk[:64]
@@ -125,11 +122,8 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
 
                         downloaded_bytes += len(chunk)
 
-                        # 🛑 CHECAGEM DURANTE O DOWNLOAD: Aborta se passar de 2 GB em tempo real
                         if downloaded_bytes > LIMITE_TELEGRAM_BYTES:
-                            msg_limite = "O download foi interrompido porque o arquivo ultrapassou o limite de 2.0 GB do Telegram."
-                            logger.warning(f"⚠️ [{nome_base}] {msg_limite}")
-                            raise ValueError(msg_limite)
+                            raise ValueError("O download foi interrompido porque o arquivo ultrapassou o limite de 2.0 GB do Telegram.")
 
                         f.write(chunk)
 
@@ -155,8 +149,8 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
 
-        logger.info(f"☁️ A iniciar upload para o Telegram: {nome_base}")
-        if progress_callback: progress_callback("☁️ **A iniciar upload para o Telegram Storage...**")
+        logger.info(f"🚀 A iniciar upload para o Telegram Storage: {nome_base}")
+        if progress_callback: progress_callback("🚀 **A iniciar upload para o Telegram Storage...**")
 
         # 2. Formatar legenda catalogada
         titulo = tmdb_info.get('title') or tmdb_info.get('name') or nome_base
@@ -174,7 +168,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
             f"📌 _Ficheiro hospedado permanentemente para o Jellyfin._"
         )
 
-        # 3. Upload para o Telegram monitorado com callback de velocidade
+        # 3. Upload monitorizado com aceleração cryptg e partes de 512 KB
         last_up_log_time = [time.time()]
         last_up_tg_time = [time.time()]
         up_start_time = time.time()
@@ -188,30 +182,26 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                 total_mb = total / (1024 * 1024)
                 pct = (current / total) * 100 if total > 0 else 0
 
-                logger.info(f"[{nome_base}] ⬆️ Upload Telegram: {up_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
+                logger.info(f"[{nome_base}] ⚡ Upload Telegram: {up_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
                 last_up_log_time[0] = now
 
                 if progress_callback and (now - last_up_tg_time[0] >= 5.0 or current == total):
-                    progress_callback(f"☁️ **A guardar no Telegram Storage...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                    progress_callback(f"🚀 **A guardar no Telegram Storage...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
                     last_up_tg_time[0] = now
 
         async def upload_task():
-            try:
-                msg = await client.send_file(
-                    Config.CANAL_STORAGE_ID,
-                    caminho_temp,
-                    caption=legenda,
-                    parse_mode='md',
-                    progress_callback=upload_progress
-                )
-            except Exception as err_md:
-                logger.warning(f"⚠️ Erro ao formatar legenda em Markdown ({err_md}). A enviar em texto simples...")
-                msg = await client.send_file(
-                    Config.CANAL_STORAGE_ID,
-                    caminho_temp,
-                    caption=f"🎬 {nome_base}\n\nSalvo para o Jellyfin.",
-                    progress_callback=upload_progress
-                )
+            # upload_file com part_size_kb de 512 é a melhor configuração para o Telegram
+            file_handle = await client.upload_file(
+                caminho_temp,
+                progress_callback=upload_progress,
+                part_size_kb=512
+            )
+            msg = await client.send_file(
+                Config.CANAL_STORAGE_ID,
+                file_handle,
+                caption=legenda,
+                parse_mode='md'
+            )
             return msg.id
 
         future = asyncio.run_coroutine_threadsafe(upload_task(), main_loop)
@@ -250,4 +240,4 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                 os.remove(caminho_temp)
                 logger.info(f"🧹 Ficheiro temporário removido: {caminho_temp}")
             except Exception as e:
-                logger.warning(f"⚠️ Não foiível remover ficheiro temporário: {e}")
+                logger.warning(f"⚠️ Não foi possível remover ficheiro temporário: {e}")
