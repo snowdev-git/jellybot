@@ -89,7 +89,7 @@ def menu_gerenciar_media(chat_id):
 
 def pesquisar_tmdb(message, tipo):
     query = message.text
-    url = f"https://api.themoviedb.org/3/search/{tipo}?api_key={Config.TMDB_API_KEY}&query={query}&language=pt-PT"
+    url = f"https://api.themoviedb.org/3/search/{tipo}?api_key={Config.TMDB_API_KEY}&query={query}&language=pt-BR"
     try:
         res = requests.get(url, timeout=10).json().get("results", [])[:5]
         if not res:
@@ -135,7 +135,7 @@ def callback_handler(call):
         tmdb_id = dados.split("_")[1]
         bot.edit_message_text("🔍 Consultando fontes e qualidades nos indexadores...", chat_id, call.message.message_id)
 
-        res_tmdb = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-PT&append_to_response=external_ids", timeout=10).json()
+        res_tmdb = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-BR&append_to_response=external_ids", timeout=10).json()
         imdb_id = res_tmdb.get('external_ids', {}).get('imdb_id')
 
         if not imdb_id:
