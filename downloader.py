@@ -12,15 +12,19 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
-# Limite estrito do Telegram para upload (2 GB)
 LIMITE_TELEGRAM_BYTES = 2 * 1024 * 1024 * 1024
 
-# Assinaturas (Magic Bytes) válidas para vídeos
 VIDEO_MAGIC_BYTES = [
     b'\x00\x00\x00\x18ftyp', b'\x00\x00\x00\x20ftyp', b'\x00\x00\x00\x1cftyp',
-    b'\x1a\x45\xdf\xa3',
-    b'RIFF'
+    b'\x1a\x45\xdf\xa3', b'RIFF'
 ]
+
+HEADERS_BROWSER = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Connection": "keep-alive"
+}
 
 def extrair_qualidade(texto: str) -> str:
     txt = texto.lower()
@@ -34,15 +38,44 @@ def extrair_qualidade(texto: str) -> str:
 def limpar_nome(nome: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
+# ==========================================
+# RESOLVEDOR INTELIGENTE DE URLS / PROXIES
+# ==========================================
+def resolver_url_direta(url_original: str) -> str:
+    """Resolve redirecionamentos e desvia de proxies quebrados (como urltech.gy)"""
+    try:
+        session = requests.Session()
+        session.headers.update(HEADERS_BROWSER)
+
+        # 1. Tentar obter o redirecionamento final com HEAD/GET
+        res = session.head(url_original, allow_redirects=True, timeout=10)
+        if res.status_code == 200 and ("video" in res.headers.get("Content-Type", "") or res.url.endswith(".mp4")):
+            logger.info(f"🔗 URL resolvida com sucesso: {res.url}")
+            return res.url
+
+        # 2. Se falhar com 500/502/503 ou retorno inválido, tentar GET com stream para capturar a URL de destino
+        with session.get(url_original, allow_redirects=True, stream=True, timeout=10) as r:
+            if r.status_code == 200:
+                logger.info(f"🔗 URL resolvida via GET Stream: {r.url}")
+                return r.url
+
+    except Exception as e:
+        logger.warning(f"⚠️ Não foi possível resolver redirecionamento automático ({e}). Usando URL original.")
+
+    return url_original
+
 def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episode: int = None):
     indexadores = carregar_indexadores()
     resultados = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     for idx in indexadores:
-        url = f"{idx['url']}/stream/movie/{imdb_id}.json" if tipo == "movie" else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
+        url = (
+            f"{idx['url']}/stream/movie/{imdb_id}.json"
+            if tipo == "movie"
+            else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
+        )
         try:
-            res = requests.get(url, headers=headers, timeout=8)
+            res = requests.get(url, headers=HEADERS_BROWSER, timeout=10)
             if res.status_code == 200:
                 streams = res.json().get("streams", [])
                 for s in streams:
@@ -74,7 +107,7 @@ def atualizar_jellyfin():
 # ==========================================
 async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None, max_workers: int = 8):
     tamanho_total = os.path.getsize(caminho_arquivo)
-    tamanho_parte = 512 * 1024  # 512 KB por bloco
+    tamanho_parte = 512 * 1024
     total_partes = math.ceil(tamanho_total / tamanho_parte)
     file_id = client._get_input_file_id()
 
@@ -139,12 +172,14 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
     caminho_temp = os.path.join(pasta_dest, f"{nome_base}_temp.mp4")
 
     try:
+        # Resolver URL antes de baixar
+        url_final = resolver_url_direta(url_fonte)
+
         logger.info(f"⏳ A iniciar download temporário: {nome_base}")
         if progress_callback: progress_callback("⏳ **A verificar disponibilidade da mídia...**")
 
-        headers = {"User-Agent": "Mozilla/5.0"}
-
-        with requests.get(url_fonte, headers=headers, stream=True, timeout=30) as r:
+        # Download usando headers completos de browser
+        with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=30, allow_redirects=True) as r:
             r.raise_for_status()
             content_type = r.headers.get('Content-Type', '').lower()
 
