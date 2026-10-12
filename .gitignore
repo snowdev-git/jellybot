@@ -1,0 +1,11 @@
+.env
+*.session
+*.session-journal
+*.db
+*.log
+mapping.json
+indexadores.json
+Media/
+__pycache__/
+venv/
+.venv/
