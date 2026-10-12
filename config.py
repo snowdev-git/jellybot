@@ -3,8 +3,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Variável de módulo global
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class Config:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    BASE_DIR = BASE_DIR
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
     TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
