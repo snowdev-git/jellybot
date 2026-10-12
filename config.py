@@ -1,19 +1,19 @@
 import os
 from dotenv import load_dotenv
 
-# Caminho absoluto da pasta do projeto
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Carrega estritamente o ficheiro .env localizado na pasta do projeto
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 class Config:
     BASE_DIR = BASE_DIR
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     
-    _api_id = os.getenv("TELEGRAM_API_ID")
+    # Aceita tanto API_ID quanto TELEGRAM_API_ID
+    _api_id = os.getenv("TELEGRAM_API_ID") or os.getenv("API_ID")
     TELEGRAM_API_ID = int(_api_id) if _api_id and _api_id.strip().isdigit() else 0
-    TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
+    
+    # Aceita tanto API_HASH quanto TELEGRAM_API_HASH
+    TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH") or os.getenv("API_HASH")
     
     CANAL_STORAGE_ID = int(os.getenv("CANAL_STORAGE_ID") or 0)
     ADMIN_ID = int(os.getenv("ADMIN_ID") or 0)
