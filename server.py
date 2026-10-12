@@ -7,8 +7,10 @@ from config import Config
 from logger import logger
 from database import obter_midia
 
+BASE_DIR = getattr(Config, 'BASE_DIR', os.path.dirname(os.path.abspath(__file__)))
+
 client = TelegramClient(
-    os.path.join(Config.BASE_DIR, "jellybot_session"),
+    os.path.join(BASE_DIR, "jellybot_session"),
     Config.TELEGRAM_API_ID,
     Config.TELEGRAM_API_HASH
 )
@@ -27,7 +29,6 @@ async def handle_stream(request):
         return web.Response(status=404, text="Nenhum ID de mensagem registrado no Telegram Storage.")
 
     try:
-        # Obter mensagens e arquivos do Telegram
         mensagens = await client.get_messages(Config.CANAL_STORAGE_ID, ids=msg_ids)
         if not isinstance(mensagens, list):
             mensagens = [mensagens]
@@ -36,7 +37,6 @@ async def handle_stream(request):
         if not mensagens:
             return web.Response(status=404, text="Arquivos de mídia não encontrados no canal do Telegram.")
 
-        # Calcular tamanho total somando as partes
         tamanho_total = sum(m.file.size for m in mensagens)
         
         range_header = request.headers.get("Range")
@@ -64,14 +64,12 @@ async def handle_stream(request):
         response = web.StreamResponse(status=206, headers=headers)
         await response.prepare(request)
 
-        # Gerador sequencial através das partes divididas
         offset_atual = 0
         for msg in mensagens:
             tamanho_parte = msg.file.size
             inicio_parte = offset_atual
             fim_parte = offset_atual + tamanho_parte - 1
 
-            # Verificar se o range solicitado engloba esta parte
             if start <= fim_parte and end >= inicio_parte:
                 req_start = max(0, start - inicio_parte)
                 req_end = min(tamanho_parte - 1, end - inicio_parte)

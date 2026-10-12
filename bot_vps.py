@@ -28,9 +28,6 @@ SESSAO_OPCOES = {}
 SESSAO_MANUAL = {}
 MAIN_LOOP = asyncio.new_event_loop()
 
-# ==========================================
-# MENUS DE NAVEGAÇÃO E REGRAS DE SEGURANÇA
-# ==========================================
 def verificar_admin(message) -> bool:
     if Config.ADMIN_ID != 0 and message.from_user.id != Config.ADMIN_ID:
         bot.reply_to(message, "⛔ Acesso negado. Apenas o administrador configurado pode utilizar este bot.")
@@ -107,7 +104,6 @@ def pesquisar_tmdb(message, tipo):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Erro ao consultar TMDB: {e}")
 
-# Handler para captura de link manual enviado por texto
 def receber_link_manual(message):
     chat_id = message.chat.id
     url_link = message.text.strip()
@@ -157,7 +153,6 @@ def receber_link_manual(message):
                 season_num = int(dados_sessao.get("season", 1))
                 next_ep_num = int(dados_sessao.get("ep", 1)) + 1
 
-                # Verificar se o próximo EP já está descarregado
                 next_media_id = f"tv_{tmdb_id}_s{season_num:02d}e{next_ep_num:02d}"
                 next_midia = obter_midia(next_media_id)
                 tag_next = " ✅" if (next_midia and next_midia.get('status') == 'COMPLETED') else ""
@@ -418,9 +413,6 @@ def callback_handler(call):
 
         threading.Thread(target=tarefa_download, daemon=True).start()
 
-# ==========================================
-# INICIALIZAÇÃO UNIFICADA E ROBUSTA
-# ==========================================
 def rodar_loop_principal():
     asyncio.set_event_loop(MAIN_LOOP)
     init_db()

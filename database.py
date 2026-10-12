@@ -3,7 +3,8 @@ import os
 from config import Config
 from logger import logger
 
-DB_PATH = os.path.join(Config.BASE_DIR, "jellybot.db")
+BASE_DIR = getattr(Config, 'BASE_DIR', os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "jellybot.db")
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -36,7 +37,6 @@ def init_db():
             )
         """)
         
-        # Inserir indexadores padrão se a tabela estiver vazia
         cursor.execute("SELECT COUNT(*) FROM indexadores")
         if cursor.fetchone()[0] == 0:
             indexadores_padrao = [

@@ -14,7 +14,6 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
-# Limite do Telegram por arquivo individual (1.8 GB para segurança de partes)
 LIMITE_PARTE_BYTES = int(1.8 * 1024 * 1024 * 1024)
 
 VIDEO_MAGIC_BYTES = [
@@ -42,7 +41,6 @@ def limpar_nome(nome: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
 def resolver_url_direta(url_original: str) -> str:
-    """Aplica bypass imediato em proxies urltech.gy para S3 direto"""
     if "urltech.gy" in url_original:
         match = re.search(r'/(\d+\.mp4)', url_original)
         if match:
@@ -105,7 +103,6 @@ def atualizar_jellyfin():
         return False
 
 def dividir_video_ffmpeg(caminho_video: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
-    """Divide vídeos pesados sem reencodar (ultra-rápido) usando ffmpeg -c copy"""
     tamanho_total = os.path.getsize(caminho_video)
     if tamanho_total <= tamanho_max_bytes:
         return [caminho_video]
@@ -113,7 +110,6 @@ def dividir_video_ffmpeg(caminho_video: str, tamanho_max_bytes: int = LIMITE_PAR
     logger.info(f"✂️ Ficheiro maior que 1.8 GB ({tamanho_total / (1024**3):.2f} GB). A iniciar divisão em partes com FFmpeg...")
     num_partes = math.ceil(tamanho_total / tamanho_max_bytes)
     
-    # Obter duração total do vídeo via ffprobe
     cmd_duration = [
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", caminho_video
@@ -263,7 +259,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
 
-        # Verificar e aplicar fatiamento em partes se > 1.8 GB
         partes_divididas = dividir_video_ffmpeg(caminho_temp, LIMITE_PARTE_BYTES)
 
         logger.info(f"🚀 A iniciar upload acelerado ({len(partes_divididas)} parte(s)) para o Telegram: {nome_base}")
@@ -325,7 +320,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
             future = asyncio.run_coroutine_threadsafe(upload_task(arq_parte), main_loop)
             msg_ids_salvos.append(str(future.result()))
 
-        # String com IDs separados por vírgula para concatenar
         str_msg_ids = ",".join(msg_ids_salvos)
 
         url_stream = f"http://{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}/stream/{media_id}"
@@ -354,7 +348,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         return False, str(e), None
 
     finally:
-        # Limpeza de ficheiros temporários
         if os.path.exists(caminho_temp):
             try: os.remove(caminho_temp)
             except: pass
