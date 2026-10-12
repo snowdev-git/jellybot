@@ -3,6 +3,7 @@ import re
 import time
 import math
 import asyncio
+import subprocess
 import requests
 from telethon import helpers
 from telethon.tl.functions.upload import SaveBigFilePartRequest
@@ -13,10 +14,9 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
-# Limite estrito do Telegram para upload (2 GB)
-LIMITE_TELEGRAM_BYTES = 2 * 1024 * 1024 * 1024
+# Limite do Telegram por arquivo individual (1.8 GB para segurança de partes)
+LIMITE_PARTE_BYTES = int(1.8 * 1024 * 1024 * 1024)
 
-# Assinaturas (Magic Bytes) válidas para vídeos
 VIDEO_MAGIC_BYTES = [
     b'\x00\x00\x00\x18ftyp', b'\x00\x00\x00\x20ftyp', b'\x00\x00\x00\x1cftyp',
     b'\x1a\x45\xdf\xa3', b'RIFF'
@@ -41,34 +41,27 @@ def extrair_qualidade(texto: str) -> str:
 def limpar_nome(nome: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
-# ==========================================
-# RESOLVEDOR INTELIGENTE DE URLS / PROXIES
-# ==========================================
 def resolver_url_direta(url_original: str) -> str:
-    """Resolve redirecionamentos e aplica bypass incondicional em proxies quebrados (urltech.gy)"""
-    # 1. Bypass direto e incondicional para links urltech.gy
+    """Aplica bypass imediato em proxies urltech.gy para S3 direto"""
     if "urltech.gy" in url_original:
         match = re.search(r'/(\d+\.mp4)', url_original)
         if match:
             id_mp4 = match.group(1)
-            url_s3_direta = f"http://89.222.120.130:34871/s3v3/0-uncategorized/{id_mp4}"
-            logger.info(f"⚡ Bypass incondicional ativado: {url_original} -> {url_s3_direta}")
-            return url_s3_direta
+            url_s3 = f"http://89.222.120.130:34871/s3v3/0-uncategorized/{id_mp4}"
+            logger.info(f"⚡ Bypass imediato aplicado: {url_original} -> {url_s3}")
+            return url_s3
 
-    # 2. Se a URL já for do S3 direto, retorna imediatamente
     if "89.222.120.130" in url_original:
         return url_original
 
-    # 3. Resolução via GET Stream para outros provedores
     try:
         session = requests.Session()
         session.headers.update(HEADERS_BROWSER)
         with session.get(url_original, allow_redirects=True, stream=True, timeout=8) as r:
             if r.status_code == 200:
-                logger.info(f"🔗 URL resolvida via GET Stream: {r.url}")
                 return r.url
     except Exception as e:
-        logger.warning(f"⚠️ Não foi possível resolver URL original ({e}). Usando link fornecido.")
+        logger.warning(f"⚠️ Não foi possível resolver URL original ({e}). Usando link padrão.")
 
     return url_original
 
@@ -88,11 +81,12 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
                 streams = res.json().get("streams", [])
                 for s in streams:
                     if "url" in s and s["url"].startswith("http"):
+                        url_limpa = resolver_url_direta(s["url"])
                         txt = (s.get("title", "") + " " + s.get("name", ""))
                         resultados.append({
                             "indexador": idx["nome"],
                             "qualidade": extrair_qualidade(txt),
-                            "url": s["url"]
+                            "url": url_limpa
                         })
         except Exception as e:
             logger.warning(f"⚠️ Falha ao consultar indexador {idx['nome']}: {e}")
@@ -110,9 +104,41 @@ def atualizar_jellyfin():
         logger.error(f"❌ Erro ao atualizar biblioteca do Jellyfin: {e}")
         return False
 
-# ==========================================
-# UPLOAD PARALELO MULTI-THREADING TELETHON
-# ==========================================
+def dividir_video_ffmpeg(caminho_video: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
+    """Divide vídeos pesados sem reencodar (ultra-rápido) usando ffmpeg -c copy"""
+    tamanho_total = os.path.getsize(caminho_video)
+    if tamanho_total <= tamanho_max_bytes:
+        return [caminho_video]
+
+    logger.info(f"✂️ Ficheiro maior que 1.8 GB ({tamanho_total / (1024**3):.2f} GB). A iniciar divisão em partes com FFmpeg...")
+    num_partes = math.ceil(tamanho_total / tamanho_max_bytes)
+    
+    # Obter duração total do vídeo via ffprobe
+    cmd_duration = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", caminho_video
+    ]
+    duracao_total = float(subprocess.check_output(cmd_duration).decode('utf-8').strip())
+    duracao_parte = duracao_total / num_partes
+
+    partes_criadas = []
+    base_dir, file_name = os.path.split(caminho_video)
+    name, ext = os.path.splitext(file_name)
+
+    for i in range(num_partes):
+        start_time = i * duracao_parte
+        caminho_parte = os.path.join(base_dir, f"{name}_part{i+1}{ext}")
+        
+        cmd_split = [
+            "ffmpeg", "-y", "-ss", str(start_time), "-i", caminho_video,
+            "-t", str(duracao_parte), "-c", "copy", "-map", "0", caminho_parte
+        ]
+        subprocess.run(cmd_split, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        partes_criadas.append(caminho_parte)
+        logger.info(f"🧩 Parte {i+1}/{num_partes} gerada: {caminho_parte}")
+
+    return partes_criadas
+
 async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None, max_workers: int = 8):
     try:
         tamanho_total = os.path.getsize(caminho_arquivo)
@@ -158,12 +184,9 @@ async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None,
 
         return InputFileBig(id=file_id, parts=total_partes, name=os.path.basename(caminho_arquivo))
     except Exception as e:
-        logger.warning(f"⚠️ Falha no envio paralelo otimizado ({e}). Alternando para o upload padrão do Telethon...")
+        logger.warning(f"⚠️ Envio paralelo alternado para padrão: {e}")
         return await client.upload_file(caminho_arquivo, progress_callback=progress_callback, part_size_kb=512)
 
-# ==========================================
-# PIPELINE DE DOWNLOAD E HOSPEDAGEM
-# ==========================================
 async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict, qualidade: str, main_loop, progress_callback=None):
     if tipo == "movie":
         nome_limpo = limpar_nome(tmdb_info.get("title", "Filme"))
@@ -182,6 +205,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
 
     os.makedirs(pasta_dest, exist_ok=True)
     caminho_temp = os.path.join(pasta_dest, f"{nome_base}_temp.mp4")
+    partes_divididas = []
 
     try:
         url_final = resolver_url_direta(url_fonte)
@@ -199,10 +223,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
             total_length = r.headers.get('content-length')
             total_bytes = int(total_length) if total_length and total_length.isdigit() else 0
 
-            if total_bytes > LIMITE_TELEGRAM_BYTES:
-                tamanho_gb = total_bytes / (1024**3)
-                raise ValueError(f"Esta mídia tem {tamanho_gb:.2f} GB e ultrapassa o limite máximo de 2.0 GB do Telegram.")
-
             downloaded_bytes = 0
             dl_start_time = time.time()
             last_dl_log_time = dl_start_time
@@ -219,10 +239,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                                 raise ValueError("Ficheiro descarregado não possui formato de vídeo válido.")
 
                         downloaded_bytes += len(chunk)
-
-                        if downloaded_bytes > LIMITE_TELEGRAM_BYTES:
-                            raise ValueError("O download foi interrompido porque o arquivo ultrapassou o limite de 2.0 GB do Telegram.")
-
                         f.write(chunk)
 
                         now = time.time()
@@ -247,8 +263,11 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
 
-        logger.info(f"🚀 A iniciar upload acelerado em paralelo para o Telegram: {nome_base}")
-        if progress_callback: progress_callback("🚀 **A iniciar upload acelerado para o Telegram Storage...**")
+        # Verificar e aplicar fatiamento em partes se > 1.8 GB
+        partes_divididas = dividir_video_ffmpeg(caminho_temp, LIMITE_PARTE_BYTES)
+
+        logger.info(f"🚀 A iniciar upload acelerado ({len(partes_divididas)} parte(s)) para o Telegram: {nome_base}")
+        if progress_callback: progress_callback(f"🚀 **A guardar no Telegram Storage ({len(partes_divididas)} parte(s))...**")
 
         titulo = tmdb_info.get('title') or tmdb_info.get('name') or nome_base
         data_rel = tmdb_info.get('release_date') or tmdb_info.get('first_air_date') or 'N/A'
@@ -257,50 +276,57 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         sinopse = tmdb_info.get('overview', 'Sem sinopse disponível.')
         sinopse_corta = sinopse[:220] + "..." if len(sinopse) > 220 else sinopse
 
-        legenda = (
-            f"🎬 **{titulo}**\n"
-            f"📅 **Ano:** {ano} | 🌟 **Nota:** {nota}/10\n"
-            f"🎧 **Qualidade:** {qualidade}\n\n"
-            f"📝 **Sinopse:** {sinopse_corta}\n\n"
-            f"📌 _Ficheiro hospedado permanentemente para o Jellyfin._"
-        )
+        msg_ids_salvos = []
 
-        last_up_log_time = [time.time()]
-        last_up_tg_time = [time.time()]
-        up_start_time = time.time()
-
-        def upload_progress(current, total):
-            now = time.time()
-            if now - last_up_log_time[0] >= 2.0 or current == total:
-                elapsed = now - up_start_time
-                speed = (current / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                up_mb = current / (1024 * 1024)
-                total_mb = total / (1024 * 1024)
-                pct = (current / total) * 100 if total > 0 else 0
-
-                logger.info(f"[{nome_base}] ⚡ Upload Paralelo Telegram: {up_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
-                last_up_log_time[0] = now
-
-                if progress_callback and (now - last_up_tg_time[0] >= 5.0 or current == total):
-                    progress_callback(f"🚀 **A guardar no Telegram Storage...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
-                    last_up_tg_time[0] = now
-
-        async def upload_task():
-            handle_arquivo = await upload_paralelo_telegram(
-                caminho_temp,
-                progress_callback=upload_progress,
-                max_workers=8
+        for idx_p, arq_parte in enumerate(partes_divididas):
+            tag_parte = f" (Parte {idx_p+1}/{len(partes_divididas)})" if len(partes_divididas) > 1 else ""
+            legenda = (
+                f"🎬 **{titulo}**{tag_parte}\n"
+                f"📅 **Ano:** {ano} | 🌟 **Nota:** {nota}/10\n"
+                f"🎧 **Qualidade:** {qualidade}\n\n"
+                f"📝 **Sinopse:** {sinopse_corta}\n\n"
+                f"📌 _Ficheiro hospedado permanentemente para o Jellyfin._"
             )
-            msg = await client.send_file(
-                Config.CANAL_STORAGE_ID,
-                handle_arquivo,
-                caption=legenda,
-                parse_mode='md'
-            )
-            return msg.id
 
-        future = asyncio.run_coroutine_threadsafe(upload_task(), main_loop)
-        msg_id_telegram = future.result()
+            last_up_log_time = [time.time()]
+            last_up_tg_time = [time.time()]
+            up_start_time = time.time()
+
+            def upload_progress(current, total):
+                now = time.time()
+                if now - last_up_log_time[0] >= 2.0 or current == total:
+                    elapsed = now - up_start_time
+                    speed = (current / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                    up_mb = current / (1024 * 1024)
+                    total_mb = total / (1024 * 1024)
+                    pct = (current / total) * 100 if total > 0 else 0
+
+                    logger.info(f"[{nome_base}{tag_parte}] ⚡ Upload Paralelo: {up_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
+                    last_up_log_time[0] = now
+
+                    if progress_callback and (now - last_up_tg_time[0] >= 5.0 or current == total):
+                        progress_callback(f"🚀 **A guardar no Telegram Storage{tag_parte}...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                        last_up_tg_time[0] = now
+
+            async def upload_task(caminho):
+                handle_arquivo = await upload_paralelo_telegram(
+                    caminho,
+                    progress_callback=upload_progress,
+                    max_workers=8
+                )
+                msg = await client.send_file(
+                    Config.CANAL_STORAGE_ID,
+                    handle_arquivo,
+                    caption=legenda,
+                    parse_mode='md'
+                )
+                return msg.id
+
+            future = asyncio.run_coroutine_threadsafe(upload_task(arq_parte), main_loop)
+            msg_ids_salvos.append(str(future.result()))
+
+        # String com IDs separados por vírgula para concatenar
+        str_msg_ids = ",".join(msg_ids_salvos)
 
         url_stream = f"http://{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}/stream/{media_id}"
         caminho_strm = os.path.join(pasta_dest, f"{nome_base}.strm")
@@ -314,13 +340,13 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
             titulo=titulo,
             ano=ano,
             qualidade=qualidade,
-            msg_id_telegram=msg_id_telegram,
+            msg_id_telegram=str_msg_ids,
             caminho_strm=caminho_strm,
             status='COMPLETED'
         )
 
         atualizar_jellyfin()
-        logger.info(f"🎉 Mídia {nome_base} hospedada e indexada com sucesso!")
+        logger.info(f"🎉 Mídia {nome_base} hospedada ({len(msg_ids_salvos)} parte(s)) e indexada com sucesso!")
         return True, nome_base, caminho_strm
 
     except Exception as e:
@@ -328,9 +354,11 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         return False, str(e), None
 
     finally:
+        # Limpeza de ficheiros temporários
         if os.path.exists(caminho_temp):
-            try:
-                os.remove(caminho_temp)
-                logger.info(f"🧹 Ficheiro temporário removido: {caminho_temp}")
-            except Exception as e:
-                logger.warning(f"⚠️ Não foi possível remover ficheiro temporário: {e}")
+            try: os.remove(caminho_temp)
+            except: pass
+        for p in partes_divididas:
+            if os.path.exists(p) and p != caminho_temp:
+                try: os.remove(p)
+                except: pass
