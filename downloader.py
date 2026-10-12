@@ -3,7 +3,6 @@ import re
 import time
 import math
 import asyncio
-import subprocess
 import requests
 from telethon import helpers
 from telethon.tl.functions.upload import SaveBigFilePartRequest
@@ -14,6 +13,7 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
+# Limite seguro para partes individuais no Telegram (1.8 GB)
 LIMITE_PARTE_BYTES = int(1.8 * 1024 * 1024 * 1024)
 
 VIDEO_MAGIC_BYTES = [
@@ -102,36 +102,29 @@ def atualizar_jellyfin():
         logger.error(f"❌ Erro ao atualizar biblioteca do Jellyfin: {e}")
         return False
 
-def dividir_video_ffmpeg(caminho_video: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
-    tamanho_total = os.path.getsize(caminho_video)
+def dividir_arquivo_binario(caminho_arquivo: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
+    """Divide o ficheiro bruto em blocos binários sem alterar o contêiner do vídeo"""
+    tamanho_total = os.path.getsize(caminho_arquivo)
     if tamanho_total <= tamanho_max_bytes:
-        return [caminho_video]
+        return [caminho_arquivo]
 
-    logger.info(f"✂️ Ficheiro maior que 1.8 GB ({tamanho_total / (1024**3):.2f} GB). A iniciar divisão em partes com FFmpeg...")
-    num_partes = math.ceil(tamanho_total / tamanho_max_bytes)
-    
-    cmd_duration = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", caminho_video
-    ]
-    duracao_total = float(subprocess.check_output(cmd_duration).decode('utf-8').strip())
-    duracao_parte = duracao_total / num_partes
-
+    logger.info(f"✂️ Ficheiro bruto de {tamanho_total / (1024**3):.2f} GB. A aplicar divisão binária em blocos de 1.8 GB...")
     partes_criadas = []
-    base_dir, file_name = os.path.split(caminho_video)
+    base_dir, file_name = os.path.split(caminho_arquivo)
     name, ext = os.path.splitext(file_name)
 
-    for i in range(num_partes):
-        start_time = i * duracao_parte
-        caminho_parte = os.path.join(base_dir, f"{name}_part{i+1}{ext}")
-        
-        cmd_split = [
-            "ffmpeg", "-y", "-ss", str(start_time), "-i", caminho_video,
-            "-t", str(duracao_parte), "-c", "copy", "-map", "0", caminho_parte
-        ]
-        subprocess.run(cmd_split, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        partes_criadas.append(caminho_parte)
-        logger.info(f"🧩 Parte {i+1}/{num_partes} gerada: {caminho_parte}")
+    parte_idx = 1
+    with open(caminho_arquivo, 'rb') as f_in:
+        while True:
+            chunk_data = f_in.read(tamanho_max_bytes)
+            if not chunk_data:
+                break
+            caminho_parte = os.path.join(base_dir, f"{name}.part{parte_idx}{ext}")
+            with open(caminho_parte, 'wb') as f_out:
+                f_out.write(chunk_data)
+            partes_criadas.append(caminho_parte)
+            logger.info(f"🧩 Bloco binário {parte_idx} criado com sucesso ({len(chunk_data) / (1024**2):.1f} MB)")
+            parte_idx += 1
 
     return partes_criadas
 
@@ -259,10 +252,11 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
 
-        partes_divididas = dividir_video_ffmpeg(caminho_temp, LIMITE_PARTE_BYTES)
+        # Divisão binária pura em partes
+        partes_divididas = dividir_arquivo_binario(caminho_temp, LIMITE_PARTE_BYTES)
 
-        logger.info(f"🚀 A iniciar upload acelerado ({len(partes_divididas)} parte(s)) para o Telegram: {nome_base}")
-        if progress_callback: progress_callback(f"🚀 **A guardar no Telegram Storage ({len(partes_divididas)} parte(s))...**")
+        logger.info(f"🚀 A iniciar upload acelerado ({len(partes_divididas)} bloco(s)) para o Telegram: {nome_base}")
+        if progress_callback: progress_callback(f"🚀 **A guardar no Telegram Storage ({len(partes_divididas)} bloco(s))...**")
 
         titulo = tmdb_info.get('title') or tmdb_info.get('name') or nome_base
         data_rel = tmdb_info.get('release_date') or tmdb_info.get('first_air_date') or 'N/A'
@@ -274,7 +268,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         msg_ids_salvos = []
 
         for idx_p, arq_parte in enumerate(partes_divididas):
-            tag_parte = f" (Parte {idx_p+1}/{len(partes_divididas)})" if len(partes_divididas) > 1 else ""
+            tag_parte = f" (Bloco {idx_p+1}/{len(partes_divididas)})" if len(partes_divididas) > 1 else ""
             legenda = (
                 f"🎬 **{titulo}**{tag_parte}\n"
                 f"📅 **Ano:** {ano} | 🌟 **Nota:** {nota}/10\n"
@@ -340,7 +334,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         )
 
         atualizar_jellyfin()
-        logger.info(f"🎉 Mídia {nome_base} hospedada ({len(msg_ids_salvos)} parte(s)) e indexada com sucesso!")
+        logger.info(f"🎉 Mídia {nome_base} hospedada ({len(msg_ids_salvos)} bloco(s)) e indexada com sucesso!")
         return True, nome_base, caminho_strm
 
     except Exception as e:
