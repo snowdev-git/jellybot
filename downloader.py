@@ -4,6 +4,7 @@ import time
 import math
 import asyncio
 import requests
+from telethon import helpers
 from telethon.tl.functions.upload import SaveBigFilePartRequest
 from telethon.tl.types import InputFileBig
 
@@ -45,7 +46,6 @@ def limpar_nome(nome: str) -> str:
 # ==========================================
 def resolver_url_direta(url_original: str) -> str:
     """Resolve redirecionamentos e aplica bypass automático em proxies quebrados (como urltech.gy)"""
-    # 1. Bypass direto para links do proxy urltech.gy
     if "urltech.gy" in url_original:
         match = re.search(r'/(\d+\.mp4)', url_original)
         if match:
@@ -59,7 +59,6 @@ def resolver_url_direta(url_original: str) -> str:
             except Exception as err_s3:
                 logger.warning(f"⚠️ Falha ao verificar URL S3 direta: {err_s3}")
 
-    # 2. Tentar resolução por redirecionamento padrão para outros provedores
     try:
         session = requests.Session()
         session.headers.update(HEADERS_BROWSER)
@@ -120,48 +119,52 @@ def atualizar_jellyfin():
 # UPLOAD PARALELO MULTI-THREADING TELETHON
 # ==========================================
 async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None, max_workers: int = 8):
-    tamanho_total = os.path.getsize(caminho_arquivo)
-    tamanho_parte = 512 * 1024
-    total_partes = math.ceil(tamanho_total / tamanho_parte)
-    file_id = client._get_input_file_id()
+    try:
+        tamanho_total = os.path.getsize(caminho_arquivo)
+        tamanho_parte = 512 * 1024
+        total_partes = math.ceil(tamanho_total / tamanho_parte)
+        file_id = helpers.generate_random_long()
 
-    fila_partes = asyncio.Queue()
-    for i in range(total_partes):
-        await fila_partes.put(i)
+        fila_partes = asyncio.Queue()
+        for i in range(total_partes):
+            await fila_partes.put(i)
 
-    bytes_enviados = 0
-    lock = asyncio.Lock()
+        bytes_enviados = 0
+        lock = asyncio.Lock()
 
-    async def worker():
-        nonlocal bytes_enviados
-        with open(caminho_arquivo, 'rb') as f:
-            while not fila_partes.empty():
-                try:
-                    idx_parte = fila_partes.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+        async def worker():
+            nonlocal bytes_enviados
+            with open(caminho_arquivo, 'rb') as f:
+                while not fila_partes.empty():
+                    try:
+                        idx_parte = fila_partes.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
 
-                f.seek(idx_parte * tamanho_parte)
-                chunk = f.read(tamanho_parte)
+                    f.seek(idx_parte * tamanho_parte)
+                    chunk = f.read(tamanho_parte)
 
-                await client(SaveBigFilePartRequest(
-                    file_id=file_id,
-                    file_part=idx_parte,
-                    file_total_parts=total_partes,
-                    bytes=chunk
-                ))
+                    await client(SaveBigFilePartRequest(
+                        file_id=file_id,
+                        file_part=idx_parte,
+                        file_total_parts=total_partes,
+                        bytes=chunk
+                    ))
 
-                async with lock:
-                    bytes_enviados += len(chunk)
-                    if progress_callback:
-                        progress_callback(bytes_enviados, tamanho_total)
+                    async with lock:
+                        bytes_enviados += len(chunk)
+                        if progress_callback:
+                            progress_callback(bytes_enviados, tamanho_total)
 
-                fila_partes.task_done()
+                    fila_partes.task_done()
 
-    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
-    await asyncio.gather(*workers)
+        workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
+        await asyncio.gather(*workers)
 
-    return InputFileBig(id=file_id, parts=total_partes, name=os.path.basename(caminho_arquivo))
+        return InputFileBig(id=file_id, parts=total_partes, name=os.path.basename(caminho_arquivo))
+    except Exception as e:
+        logger.warning(f"⚠️ Falha no envio paralelo otimizado ({e}). Alternando para o upload padrão do Telethon...")
+        return await client.upload_file(caminho_arquivo, progress_callback=progress_callback, part_size_kb=512)
 
 # ==========================================
 # PIPELINE DE DOWNLOAD E HOSPEDAGEM
