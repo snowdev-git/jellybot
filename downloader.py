@@ -12,8 +12,10 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
+# Limite estrito do Telegram para upload (2 GB)
 LIMITE_TELEGRAM_BYTES = 2 * 1024 * 1024 * 1024
 
+# Assinaturas (Magic Bytes) válidas para vídeos
 VIDEO_MAGIC_BYTES = [
     b'\x00\x00\x00\x18ftyp', b'\x00\x00\x00\x20ftyp', b'\x00\x00\x00\x1cftyp',
     b'\x1a\x45\xdf\xa3', b'RIFF'
@@ -42,25 +44,37 @@ def limpar_nome(nome: str) -> str:
 # RESOLVEDOR INTELIGENTE DE URLS / PROXIES
 # ==========================================
 def resolver_url_direta(url_original: str) -> str:
-    """Resolve redirecionamentos e desvia de proxies quebrados (como urltech.gy)"""
+    """Resolve redirecionamentos e aplica bypass automático em proxies quebrados (como urltech.gy)"""
+    # 1. Bypass direto para links do proxy urltech.gy
+    if "urltech.gy" in url_original:
+        match = re.search(r'/(\d+\.mp4)', url_original)
+        if match:
+            id_mp4 = match.group(1)
+            url_s3_direta = f"http://89.222.120.130:34871/s3v3/0-uncategorized/{id_mp4}"
+            try:
+                res_s3 = requests.head(url_s3_direta, headers=HEADERS_BROWSER, timeout=5)
+                if res_s3.status_code == 200:
+                    logger.info(f"⚡ Bypass de proxy ativado: {url_original} -> {url_s3_direta}")
+                    return url_s3_direta
+            except Exception as err_s3:
+                logger.warning(f"⚠️ Falha ao verificar URL S3 direta: {err_s3}")
+
+    # 2. Tentar resolução por redirecionamento padrão para outros provedores
     try:
         session = requests.Session()
         session.headers.update(HEADERS_BROWSER)
 
-        # 1. Tentar obter o redirecionamento final com HEAD/GET
-        res = session.head(url_original, allow_redirects=True, timeout=10)
+        res = session.head(url_original, allow_redirects=True, timeout=8)
         if res.status_code == 200 and ("video" in res.headers.get("Content-Type", "") or res.url.endswith(".mp4")):
             logger.info(f"🔗 URL resolvida com sucesso: {res.url}")
             return res.url
 
-        # 2. Se falhar com 500/502/503 ou retorno inválido, tentar GET com stream para capturar a URL de destino
-        with session.get(url_original, allow_redirects=True, stream=True, timeout=10) as r:
+        with session.get(url_original, allow_redirects=True, stream=True, timeout=8) as r:
             if r.status_code == 200:
                 logger.info(f"🔗 URL resolvida via GET Stream: {r.url}")
                 return r.url
-
     except Exception as e:
-        logger.warning(f"⚠️ Não foi possível resolver redirecionamento automático ({e}). Usando URL original.")
+        logger.warning(f"⚠️ Não foi possível resolver URL original ({e}). Usando link fornecido.")
 
     return url_original
 
@@ -172,13 +186,11 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
     caminho_temp = os.path.join(pasta_dest, f"{nome_base}_temp.mp4")
 
     try:
-        # Resolver URL antes de baixar
         url_final = resolver_url_direta(url_fonte)
 
         logger.info(f"⏳ A iniciar download temporário: {nome_base}")
         if progress_callback: progress_callback("⏳ **A verificar disponibilidade da mídia...**")
 
-        # Download usando headers completos de browser
         with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=30, allow_redirects=True) as r:
             r.raise_for_status()
             content_type = r.headers.get('Content-Type', '').lower()
