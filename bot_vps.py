@@ -135,7 +135,7 @@ def receber_link_manual(message):
                 url_fonte=url_link,
                 tipo=dados_sessao["tipo"],
                 tmdb_info=dados_sessao["tmdb_info"],
-                qualidade="LINK MANUALL 🔗",
+                qualidade="LINK MANUAL 🔗",
                 main_loop=MAIN_LOOP,
                 progress_callback=atualizar_status_bot
             )
@@ -157,9 +157,14 @@ def receber_link_manual(message):
                 season_num = int(dados_sessao.get("season", 1))
                 next_ep_num = int(dados_sessao.get("ep", 1)) + 1
 
+                # Verificar se o próximo EP já está descarregado
+                next_media_id = f"tv_{tmdb_id}_s{season_num:02d}e{next_ep_num:02d}"
+                next_midia = obter_midia(next_media_id)
+                tag_next = " ✅" if (next_midia and next_midia.get('status') == 'COMPLETED') else ""
+
                 markup_proximo = InlineKeyboardMarkup(row_width=2)
                 markup_proximo.add(
-                    InlineKeyboardButton(f"⏭️ Próximo EP (S{season_num:02d}E{next_ep_num:02d})", callback_data=f"seach_ep_{tmdb_id}_{season_num}_{next_ep_num}"),
+                    InlineKeyboardButton(f"⏭️ Próximo EP (S{season_num:02d}E{next_ep_num:02d}){tag_next}", callback_data=f"seach_ep_{tmdb_id}_{season_num}_{next_ep_num}"),
                     InlineKeyboardButton("🔙 Lista de Episódios", callback_data=f"ep_{tmdb_id}_{season_num}")
                 )
 
@@ -192,6 +197,16 @@ def callback_handler(call):
             markup.add(InlineKeyboardButton(f"🗑️ {f['titulo']} ({f['ano']})", callback_data=f"del_{f['media_id']}"))
         bot.edit_message_text("🎬 **Selecione o filme que deseja remover:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
+    elif dados == "mgr_series":
+        series = listar_midias("series")
+        if not series:
+            return bot.edit_message_text("❌ Nenhuma série registada na base de dados.", chat_id, call.message.message_id)
+
+        markup = InlineKeyboardMarkup(row_width=1)
+        for s in series[:25]:
+            markup.add(InlineKeyboardButton(f"🗑️ {s['titulo']}", callback_data=f"del_{s['media_id']}"))
+        bot.edit_message_text("📺 **Selecione a mídia que deseja remover:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
     elif dados.startswith("del_"):
         media_id = dados[4:]
         midia = obter_midia(media_id)
@@ -218,9 +233,7 @@ def callback_handler(call):
             btn_txt = f"[{opt['indexador']}] {opt['qualidade']}"
             markup.add(InlineKeyboardButton(btn_txt, callback_data=f"down_{chave}_{i}"))
 
-        # Opção para inserir link direto manualmente
         markup.add(InlineKeyboardButton("🔗 Inserir Link Direto (HTTP/MP4)", callback_data=f"input_link_m_{tmdb_id}"))
-
         bot.edit_message_text("🍿 **Escolha a qualidade ou insira um link direto:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
     elif dados.startswith("s_"):
@@ -240,12 +253,28 @@ def callback_handler(call):
         episodes = res.get("episodes", [])
 
         markup = InlineKeyboardMarkup(row_width=3)
-        botoes = [InlineKeyboardButton(f"EP {ep['episode_number']}", callback_data=f"seach_ep_{tmdb_id}_{season}_{ep['episode_number']}") for ep in episodes]
+        botoes = []
+        for ep in episodes:
+            ep_num = ep['episode_number']
+            media_id = f"tv_{tmdb_id}_s{int(season):02d}e{int(ep_num):02d}"
+            midia_existente = obter_midia(media_id)
+            tag_status = " ✅" if (midia_existente and midia_existente.get("status") == "COMPLETED") else ""
+
+            botoes.append(
+                InlineKeyboardButton(
+                    f"EP {ep_num}{tag_status}",
+                    callback_data=f"seach_ep_{tmdb_id}_{season}_{ep_num}"
+                )
+            )
+
         for i in range(0, len(botoes), 3):
             markup.row(*botoes[i:i+3])
 
         markup.add(InlineKeyboardButton("🔙 Voltar para Temporadas", callback_data=f"s_{tmdb_id}"))
-        bot.edit_message_text(f"📺 **Temporada {season}**\nEscolha o Episódio:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.edit_message_text(
+            f"📺 **Temporada {season}**\nEscolha o Episódio:\n\n_Legenda: ✅ Episódio já indexado no Jellyfin_",
+            chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown"
+        )
 
     elif dados.startswith("seach_ep_"):
         tmdb_id, season, ep = dados.split("_")[2:5]
@@ -267,12 +296,15 @@ def callback_handler(call):
             btn_txt = f"[{opt['indexador']}] {opt['qualidade']}"
             markup.add(InlineKeyboardButton(btn_txt, callback_data=f"down_{chave}_{i}"))
 
-        # Opção para colar link direto
         markup.add(InlineKeyboardButton("🔗 Inserir Link Direto (HTTP/MP4)", callback_data=f"input_link_s_{tmdb_id}_{season}_{ep}"))
 
         next_ep_num = ep_num + 1
+        next_media_id = f"tv_{tmdb_id}_s{season_num:02d}e{next_ep_num:02d}"
+        next_midia = obter_midia(next_media_id)
+        tag_next = " ✅" if (next_midia and next_midia.get("status") == "COMPLETED") else ""
+
         markup.row(
-            InlineKeyboardButton(f"⏭️ Ir para EP {next_ep_num:02d}", callback_data=f"seach_ep_{tmdb_id}_{season_num}_{next_ep_num}"),
+            InlineKeyboardButton(f"⏭️ EP {next_ep_num:02d}{tag_next}", callback_data=f"seach_ep_{tmdb_id}_{season_num}_{next_ep_num}"),
             InlineKeyboardButton("🔙 Lista de Episódios", callback_data=f"ep_{tmdb_id}_{season_num}")
         )
 
@@ -350,9 +382,13 @@ def callback_handler(call):
                     season_num = int(dados_sessao.get("season", 1))
                     next_ep_num = int(dados_sessao.get("ep", 1)) + 1
 
+                    next_media_id = f"tv_{tmdb_id}_s{season_num:02d}e{next_ep_num:02d}"
+                    next_midia = obter_midia(next_media_id)
+                    tag_next = " ✅" if (next_midia and next_midia.get("status") == "COMPLETED") else ""
+
                     markup_proximo = InlineKeyboardMarkup(row_width=2)
                     markup_proximo.add(
-                        InlineKeyboardButton(f"⏭️ Próximo EP (S{season_num:02d}E{next_ep_num:02d})", callback_data=f"seach_ep_{tmdb_id}_{season_num}_{next_ep_num}"),
+                        InlineKeyboardButton(f"⏭️ Próximo EP (S{season_num:02d}E{next_ep_num:02d}){tag_next}", callback_data=f"seach_ep_{tmdb_id}_{season_num}_{next_ep_num}"),
                         InlineKeyboardButton("🔙 Lista de Episódios", callback_data=f"ep_{tmdb_id}_{season_num}")
                     )
 

@@ -45,29 +45,24 @@ def limpar_nome(nome: str) -> str:
 # RESOLVEDOR INTELIGENTE DE URLS / PROXIES
 # ==========================================
 def resolver_url_direta(url_original: str) -> str:
-    """Resolve redirecionamentos e aplica bypass automático em proxies quebrados (como urltech.gy)"""
+    """Resolve redirecionamentos e aplica bypass incondicional em proxies quebrados (urltech.gy)"""
+    # 1. Bypass direto e incondicional para links urltech.gy
     if "urltech.gy" in url_original:
         match = re.search(r'/(\d+\.mp4)', url_original)
         if match:
             id_mp4 = match.group(1)
             url_s3_direta = f"http://89.222.120.130:34871/s3v3/0-uncategorized/{id_mp4}"
-            try:
-                res_s3 = requests.head(url_s3_direta, headers=HEADERS_BROWSER, timeout=5)
-                if res_s3.status_code == 200:
-                    logger.info(f"⚡ Bypass de proxy ativado: {url_original} -> {url_s3_direta}")
-                    return url_s3_direta
-            except Exception as err_s3:
-                logger.warning(f"⚠️ Falha ao verificar URL S3 direta: {err_s3}")
+            logger.info(f"⚡ Bypass incondicional ativado: {url_original} -> {url_s3_direta}")
+            return url_s3_direta
 
+    # 2. Se a URL já for do S3 direto, retorna imediatamente
+    if "89.222.120.130" in url_original:
+        return url_original
+
+    # 3. Resolução via GET Stream para outros provedores
     try:
         session = requests.Session()
         session.headers.update(HEADERS_BROWSER)
-
-        res = session.head(url_original, allow_redirects=True, timeout=8)
-        if res.status_code == 200 and ("video" in res.headers.get("Content-Type", "") or res.url.endswith(".mp4")):
-            logger.info(f"🔗 URL resolvida com sucesso: {res.url}")
-            return res.url
-
         with session.get(url_original, allow_redirects=True, stream=True, timeout=8) as r:
             if r.status_code == 200:
                 logger.info(f"🔗 URL resolvida via GET Stream: {r.url}")
