@@ -1,8 +1,12 @@
 import os
 import re
 import time
+import math
 import asyncio
 import requests
+from telethon.tl.functions.upload import SaveBigFilePartRequest
+from telethon.tl.types import InputFileBig
+
 from config import Config
 from logger import logger
 from database import salvar_midia, carregar_indexadores
@@ -65,6 +69,56 @@ def atualizar_jellyfin():
         logger.error(f"❌ Erro ao atualizar biblioteca do Jellyfin: {e}")
         return False
 
+# ==========================================
+# UPLOAD PARALELO MULTI-THREADING TELETHON
+# ==========================================
+async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None, max_workers: int = 8):
+    tamanho_total = os.path.getsize(caminho_arquivo)
+    tamanho_parte = 512 * 1024  # 512 KB por bloco
+    total_partes = math.ceil(tamanho_total / tamanho_parte)
+    file_id = client._get_input_file_id()
+
+    fila_partes = asyncio.Queue()
+    for i in range(total_partes):
+        await fila_partes.put(i)
+
+    bytes_enviados = 0
+    lock = asyncio.Lock()
+
+    async def worker():
+        nonlocal bytes_enviados
+        with open(caminho_arquivo, 'rb') as f:
+            while not fila_partes.empty():
+                try:
+                    idx_parte = fila_partes.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+                f.seek(idx_parte * tamanho_parte)
+                chunk = f.read(tamanho_parte)
+
+                await client(SaveBigFilePartRequest(
+                    file_id=file_id,
+                    file_part=idx_parte,
+                    file_total_parts=total_partes,
+                    bytes=chunk
+                ))
+
+                async with lock:
+                    bytes_enviados += len(chunk)
+                    if progress_callback:
+                        progress_callback(bytes_enviados, tamanho_total)
+
+                fila_partes.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
+    await asyncio.gather(*workers)
+
+    return InputFileBig(id=file_id, parts=total_partes, name=os.path.basename(caminho_arquivo))
+
+# ==========================================
+# PIPELINE DE DOWNLOAD E HOSPEDAGEM
+# ==========================================
 async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict, qualidade: str, main_loop, progress_callback=None):
     if tipo == "movie":
         nome_limpo = limpar_nome(tmdb_info.get("title", "Filme"))
@@ -90,7 +144,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
 
         headers = {"User-Agent": "Mozilla/5.0"}
 
-        # 1. Download monitorado
         with requests.get(url_fonte, headers=headers, stream=True, timeout=30) as r:
             r.raise_for_status()
             content_type = r.headers.get('Content-Type', '').lower()
@@ -149,10 +202,9 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
 
-        logger.info(f"🚀 A iniciar upload para o Telegram Storage: {nome_base}")
-        if progress_callback: progress_callback("🚀 **A iniciar upload para o Telegram Storage...**")
+        logger.info(f"🚀 A iniciar upload acelerado em paralelo para o Telegram: {nome_base}")
+        if progress_callback: progress_callback("🚀 **A iniciar upload acelerado para o Telegram Storage...**")
 
-        # 2. Formatar legenda catalogada
         titulo = tmdb_info.get('title') or tmdb_info.get('name') or nome_base
         data_rel = tmdb_info.get('release_date') or tmdb_info.get('first_air_date') or 'N/A'
         ano = str(data_rel)[:4]
@@ -168,7 +220,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
             f"📌 _Ficheiro hospedado permanentemente para o Jellyfin._"
         )
 
-        # 3. Upload monitorizado com aceleração cryptg e partes de 512 KB
         last_up_log_time = [time.time()]
         last_up_tg_time = [time.time()]
         up_start_time = time.time()
@@ -182,7 +233,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                 total_mb = total / (1024 * 1024)
                 pct = (current / total) * 100 if total > 0 else 0
 
-                logger.info(f"[{nome_base}] ⚡ Upload Telegram: {up_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
+                logger.info(f"[{nome_base}] ⚡ Upload Paralelo Telegram: {up_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
                 last_up_log_time[0] = now
 
                 if progress_callback and (now - last_up_tg_time[0] >= 5.0 or current == total):
@@ -190,15 +241,14 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                     last_up_tg_time[0] = now
 
         async def upload_task():
-            # upload_file com part_size_kb de 512 é a melhor configuração para o Telegram
-            file_handle = await client.upload_file(
+            handle_arquivo = await upload_paralelo_telegram(
                 caminho_temp,
                 progress_callback=upload_progress,
-                part_size_kb=512
+                max_workers=8
             )
             msg = await client.send_file(
                 Config.CANAL_STORAGE_ID,
-                file_handle,
+                handle_arquivo,
                 caption=legenda,
                 parse_mode='md'
             )
@@ -207,13 +257,11 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         future = asyncio.run_coroutine_threadsafe(upload_task(), main_loop)
         msg_id_telegram = future.result()
 
-        # 4. Criar ficheiro .strm
         url_stream = f"http://{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}/stream/{media_id}"
         caminho_strm = os.path.join(pasta_dest, f"{nome_base}.strm")
         with open(caminho_strm, "w", encoding="utf-8") as f:
             f.write(url_stream + "\n")
 
-        # 5. Registar na base de dados SQLite
         salvar_midia(
             media_id=media_id,
             tmdb_id=str(tmdb_info.get('id', '0')),
