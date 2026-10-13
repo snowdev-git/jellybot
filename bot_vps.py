@@ -45,6 +45,17 @@ def menu_principal():
     )
     return markup
 
+def responder_ou_editar(call, texto, reply_markup=None):
+    """Trata edição de mensagens normais vs mensagens de documentos/anexos."""
+    try:
+        if call.message.document:
+            bot.send_message(call.message.chat.id, texto, reply_markup=reply_markup, parse_mode="Markdown")
+        else:
+            bot.edit_message_text(texto, call.message.chat.id, call.message.message_id, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"⚠️ Falha ao editar mensagem ({e}). Enviando nova mensagem...")
+        bot.send_message(call.message.chat.id, texto, reply_markup=reply_markup, parse_mode="Markdown")
+
 @bot.message_handler(commands=['start'])
 def comando_start(message):
     if not verificar_admin(message): return
@@ -90,10 +101,11 @@ def exibir_menu_indexadores(chat_id, message_id=None):
         status_ico = "🟢 Ativo" if idx['ativo'] == 1 else "🔴 Inativo"
         markup.add(InlineKeyboardButton(f"{idx['nome']} — {status_ico}", callback_data=f"toggle_idx_{idx['id']}"))
         
-    texto = "⚙️ **Gerenciador de Indexadores Stremio**\nClique para **Ativar** ou **Desativar** fontes de busca (indexadores desativados tornam as buscas muito mais rápidas):"
+    texto = "⚙️ **Gerenciador de Indexadores Stremio**\nClique para **Ativar** ou **Desativar** fontes de busca:"
     
     if message_id:
-        bot.edit_message_text(texto, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
+        try: bot.edit_message_text(texto, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
+        except: bot.send_message(chat_id, texto, reply_markup=markup, parse_mode="Markdown")
     else:
         bot.send_message(chat_id, texto, reply_markup=markup, parse_mode="Markdown")
 
@@ -129,12 +141,12 @@ def receber_link_manual(message):
     url_link = message.text.strip()
 
     if not url_link.startswith("http://") and not url_link.startswith("https://"):
-        msg = bot.send_message(chat_id, "❌ Link inválido. Certifique-se de que o link começa com `http://` ou `https://`. Envie novamente:")
+        msg = bot.send_message(chat_id, "❌ Link inválido. Envie novamente:")
         return bot.register_next_step_handler(msg, receber_link_manual)
 
     dados_sessao = SESSAO_MANUAL.get(chat_id)
     if not dados_sessao:
-        return bot.send_message(chat_id, "❌ Sessão expirada. Por favor, pesquise a mídia novamente.")
+        return bot.send_message(chat_id, "❌ Sessão expirada. Pesquise a mídia novamente.")
 
     msg_status = bot.send_message(chat_id, "⏳ **Link recebido! A iniciar processamento...**", parse_mode="Markdown")
 
@@ -163,7 +175,7 @@ def receber_link_manual(message):
                 f"🎬 **Nome:** `{msg_resultado}`\n"
                 f"🎧 **Fonte:** `Link Manual Direct`\n"
                 f"📂 **Caminho Local:** `{caminho_strm}`\n\n"
-                f"👉 **Acesse o Jellyfin para reproduzir ou baixe o arquivo .strm anexado abaixo!**"
+                f"👉 **Acesse o Jellyfin para reproduzir!**"
             )
             bot.edit_message_text(msg_sucesso, chat_id, msg_status.message_id, parse_mode="Markdown")
 
@@ -193,7 +205,7 @@ def receber_link_manual(message):
                 except Exception as err_doc:
                     logger.warning(f"⚠️ Erro ao enviar documento .strm: {err_doc}")
         else:
-            bot.edit_message_text(f"❌ **Falha ao processar link manual:** `{msg_resultado}`\n\nVerifique se o link é direto para o vídeo.", chat_id, msg_status.message_id, parse_mode="Markdown")
+            bot.edit_message_text(f"❌ **Falha ao processar link manual:** `{msg_resultado}`", chat_id, msg_status.message_id, parse_mode="Markdown")
 
     threading.Thread(target=tarefa_download_manual, daemon=True).start()
 
@@ -210,22 +222,22 @@ def callback_handler(call):
     elif dados == "mgr_filmes":
         filmes = listar_midias("movie")
         if not filmes:
-            return bot.edit_message_text("❌ Nenhum filme registado na base de dados.", chat_id, call.message.message_id)
+            return responder_ou_editar(call, "❌ Nenhum filme registado na base de dados.")
 
         markup = InlineKeyboardMarkup(row_width=1)
         for f in filmes[:25]:
             markup.add(InlineKeyboardButton(f"🗑️ {f['titulo']} ({f['ano']})", callback_data=f"del_{f['media_id']}"))
-        bot.edit_message_text("🎬 **Selecione o filme que deseja remover:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        responder_ou_editar(call, "🎬 **Selecione o filme que deseja remover:**", reply_markup=markup)
 
     elif dados == "mgr_series":
         series = listar_midias("series")
         if not series:
-            return bot.edit_message_text("❌ Nenhuma série registada na base de dados.", chat_id, call.message.message_id)
+            return responder_ou_editar(call, "❌ Nenhuma série registada na base de dados.")
 
         markup = InlineKeyboardMarkup(row_width=1)
         for s in series[:25]:
             markup.add(InlineKeyboardButton(f"🗑️ {s['titulo']}", callback_data=f"del_{s['media_id']}"))
-        bot.edit_message_text("📺 **Selecione a mídia que deseja remover:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        responder_ou_editar(call, "📺 **Selecione a mídia que deseja remover:**", reply_markup=markup)
 
     elif dados.startswith("del_"):
         media_id = dados[4:]
@@ -235,11 +247,11 @@ def callback_handler(call):
                 try: os.remove(midia["caminho_strm"])
                 except: pass
             remover_midia(media_id)
-            bot.edit_message_text(f"✅ **Mídia removida da base de dados e arquivo .strm apagado!**\n🎬 `{midia['titulo']}`", chat_id, call.message.message_id, parse_mode="Markdown")
+            responder_ou_editar(call, f"✅ **Mídia removida da base de dados e arquivo .strm apagado!**\n🎬 `{midia['titulo']}`")
 
     elif dados.startswith("m_"):
         tmdb_id = dados.split("_")[1]
-        bot.edit_message_text("🔍 Consultando fontes e qualidades nos indexadores...", chat_id, call.message.message_id)
+        responder_ou_editar(call, "🔍 Consultando fontes e qualidades nos indexadores...")
 
         res_tmdb = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-BR&append_to_response=external_ids", timeout=10).json()
         imdb_id = res_tmdb.get('external_ids', {}).get('imdb_id')
@@ -254,7 +266,7 @@ def callback_handler(call):
             markup.add(InlineKeyboardButton(btn_txt, callback_data=f"down_{chave}_{i}"))
 
         markup.add(InlineKeyboardButton("🔗 Inserir Link Direto (HTTP/MP4)", callback_data=f"input_link_m_{tmdb_id}"))
-        bot.edit_message_text("🍿 **Escolha a qualidade ou insira um link direto:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        responder_ou_editar(call, "🍿 **Escolha a qualidade ou insira um link direto:**", reply_markup=markup)
 
     elif dados.startswith("s_"):
         tmdb_id = dados.split("_")[1]
@@ -265,7 +277,7 @@ def callback_handler(call):
         for s in seasons:
             if s.get("season_number", 0) > 0:
                 markup.add(InlineKeyboardButton(f"Temporada {s['season_number']}", callback_data=f"ep_{tmdb_id}_{s['season_number']}"))
-        bot.edit_message_text(f"📺 **{res.get('name')}**\nEscolha a Temporada:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        responder_ou_editar(call, f"📺 **{res.get('name')}**\nEscolha a Temporada:", reply_markup=markup)
 
     elif dados.startswith("ep_"):
         tmdb_id, season = dados.split("_")[1:3]
@@ -291,15 +303,14 @@ def callback_handler(call):
             markup.row(*botoes[i:i+3])
 
         markup.add(InlineKeyboardButton("🔙 Voltar para Temporadas", callback_data=f"s_{tmdb_id}"))
-        bot.edit_message_text(
-            f"📺 **Temporada {season}**\nEscolha o Episódio:\n\n_Legenda: ✅ Episódio já indexado no Jellyfin_",
-            chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown"
-        )
+        responder_ou_editar(call, f"📺 **Temporada {season}**\nEscolha o Episódio:\n\n_Legenda: ✅ Episódio já indexado no Jellyfin_", reply_markup=markup)
 
     elif dados.startswith("seach_ep_"):
-        tmdb_id, season, ep = dados.split("_")[2:5]
+        partes_ep = dados.split("_")
+        tmdb_id, season, ep = partes_ep[2], partes_ep[3], partes_ep[4]
         season_num, ep_num = int(season), int(ep)
-        bot.edit_message_text(f"🔍 Consultando fontes para S{season_num:02d}E{ep_num:02d}...", chat_id, call.message.message_id)
+        
+        responder_ou_editar(call, f"🔍 Consultando fontes para S{season_num:02d}E{ep_num:02d}...")
 
         res_tv = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-BR&append_to_response=external_ids", timeout=10).json()
         imdb_id = res_tv.get('external_ids', {}).get('imdb_id')
@@ -328,7 +339,7 @@ def callback_handler(call):
             InlineKeyboardButton("🔙 Lista de Episódios", callback_data=f"ep_{tmdb_id}_{season_num}")
         )
 
-        bot.edit_message_text(f"📺 **S{season_num:02d}E{ep_num:02d} - Escolha a qualidade ou cole um link:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        responder_ou_editar(call, f"📺 **S{season_num:02d}E{ep_num:02d} - Escolha a qualidade ou cole um link:**", reply_markup=markup)
 
     elif dados.startswith("input_link_"):
         partes = dados.split("_")
@@ -347,7 +358,7 @@ def callback_handler(call):
             SESSAO_MANUAL[chat_id] = {"tipo": "series", "tmdb_info": res_tv, "tmdb_id": tmdb_id, "season": season, "ep": ep}
             tit = f"{res_tv.get('name', 'Série')} S{int(season):02d}E{int(ep):02d}"
 
-        msg = bot.send_message(chat_id, f"🔗 **Envie o link direto (HTTP/HTTPS) do vídeo para `{tit}`:**\n\n_Exemplo: http://site.com/video.mp4_", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"🔗 **Envie o link direto (HTTP/HTTPS) do vídeo para `{tit}`:**", parse_mode="Markdown")
         bot.register_next_step_handler(msg, receber_link_manual)
 
     elif dados.startswith("down_"):
@@ -363,12 +374,14 @@ def callback_handler(call):
 
         dados_sessao = SESSAO_OPCOES.get(chave)
         if not dados_sessao:
-            return bot.edit_message_text("❌ Sessão expirada. Por favor, pesquise novamente.", chat_id, call.message.message_id)
+            return responder_ou_editar(call, "❌ Sessão expirada. Por favor, pesquise novamente.")
 
         item = dados_sessao["opcoes"][idx_opt]
 
+        msg_status = bot.send_message(chat_id, "⏳ **A iniciar processamento...**", parse_mode="Markdown")
+
         def atualizar_status_bot(texto_status):
-            try: bot.edit_message_text(texto_status, chat_id, call.message.message_id, parse_mode="Markdown")
+            try: bot.edit_message_text(texto_status, chat_id, msg_status.message_id, parse_mode="Markdown")
             except: pass
 
         def tarefa_download():
@@ -392,9 +405,9 @@ def callback_handler(call):
                     f"🎬 **Nome:** `{msg_resultado}`\n"
                     f"🎧 **Qualidade Escolhida:** `{item['qualidade']}`\n"
                     f"📂 **Caminho Local:** `{caminho_strm}`\n\n"
-                    f"👉 **Acesse o Jellyfin para reproduzir ou baixe o arquivo .strm anexado abaixo!**"
+                    f"👉 **Acesse o Jellyfin para reproduzir!**"
                 )
-                bot.edit_message_text(msg_sucesso, chat_id, call.message.message_id, parse_mode="Markdown")
+                bot.edit_message_text(msg_sucesso, chat_id, msg_status.message_id, parse_mode="Markdown")
 
                 markup_proximo = None
                 if dados_sessao["tipo"] == "series":
@@ -434,7 +447,7 @@ def callback_handler(call):
                         InlineKeyboardButton("🔙 Lista de Episódios", callback_data=f"ep_{tmdb_id}_{season_num}")
                     )
 
-                bot.edit_message_text(f"❌ **Falha ao processar mídia:** `{msg_resultado}`\n\nPor favor, tente outra opção ou cole o link direto.", chat_id, call.message.message_id, reply_markup=markup_fail, parse_mode="Markdown")
+                bot.edit_message_text(f"❌ **Falha ao processar mídia:** `{msg_resultado}`", chat_id, msg_status.message_id, reply_markup=markup_fail, parse_mode="Markdown")
 
         threading.Thread(target=tarefa_download, daemon=True).start()
 
