@@ -28,14 +28,43 @@ HEADERS_BROWSER = {
     "Connection": "keep-alive"
 }
 
-def extrair_qualidade(texto: str) -> str:
-    txt = texto.lower()
-    is_dub = any(termo in txt for termo in ["dub", "dublado", "dual", "pt-br", "ptbr", "br", "pt", "nacional", "multi"])
+def extrair_info_stream(s: dict) -> str:
+    """Extrai qualidade, idioma (Dublado/Legendado) e servidor do stream de forma detalhada."""
+    title = str(s.get("title", ""))
+    name = str(s.get("name", ""))
+    desc = str(s.get("description", ""))
+    
+    texto_full = f"{title} {name} {desc}".lower()
+
+    # Deteção de idioma / áudio
+    is_dub = any(termo in texto_full for termo in [
+        "dub", "dublado", "dual", "pt-br", "ptbr", "br", "português", "portugues", "nacional", "multi"
+    ])
+    
+    if "legendado" in texto_full or "subtitled" in texto_full:
+        if not ("dub" in texto_full or "dual" in texto_full):
+            is_dub = False
+
     audio = "DUBLADO 🇧🇷" if is_dub else "LEGENDADO 🔤"
-    if "4k" in txt or "2160p" in txt: return f"4K 🌟 ({audio})"
-    elif "1080p" in txt or "fhd" in txt: return f"1080p FHD 🎬 ({audio})"
-    elif "720p" in txt or "hd" in txt: return f"720p HD ⚡ ({audio})"
-    return f"SD 📺 ({audio})"
+
+    # Deteção de resolução
+    if "4k" in texto_full or "2160p" in texto_full:
+        qualidade = "4K 🌟"
+    elif "1080p" in texto_full or "fhd" in texto_full:
+        qualidade = "1080p FHD 🎬"
+    elif "720p" in texto_full or "hd" in texto_full:
+        qualidade = "720p HD ⚡"
+    else:
+        qualidade = "1080p FHD 🎬"
+
+    # Deteção de servidor fonte (Astra, Neon, Carbon, Azure, etc.)
+    servidor = ""
+    for srv in ["astra", "neon", "carbon", "azure", "fast", "s3", "torrentio"]:
+        if srv in texto_full:
+            servidor = f" [{srv.capitalize()}]"
+            break
+
+    return f"{qualidade} ({audio}){servidor}"
 
 def limpar_nome(nome: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
@@ -80,10 +109,10 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
                 for s in streams:
                     if "url" in s and s["url"].startswith("http"):
                         url_limpa = resolver_url_direta(s["url"])
-                        txt = (s.get("title", "") + " " + s.get("name", ""))
+                        qualidade_info = extrair_info_stream(s)
                         resultados.append({
                             "indexador": idx["nome"],
-                            "qualidade": extrair_qualidade(txt),
+                            "qualidade": qualidade_info,
                             "url": url_limpa
                         })
         except Exception as e:
@@ -103,7 +132,6 @@ def atualizar_jellyfin():
         return False
 
 def dividir_arquivo_binario(caminho_arquivo: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
-    """Divide o ficheiro bruto em blocos binários sem alterar o contêiner do vídeo"""
     tamanho_total = os.path.getsize(caminho_arquivo)
     if tamanho_total <= tamanho_max_bytes:
         return [caminho_arquivo]
@@ -252,7 +280,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
 
-        # Divisão binária pura em partes
         partes_divididas = dividir_arquivo_binario(caminho_temp, LIMITE_PARTE_BYTES)
 
         logger.info(f"🚀 A iniciar upload acelerado ({len(partes_divididas)} bloco(s)) para o Telegram: {nome_base}")
