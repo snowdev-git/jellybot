@@ -100,6 +100,20 @@ def remover_midia(media_id):
         cursor.execute("DELETE FROM fila WHERE media_id = ?", (media_id,))
         conn.commit()
 
+# --- MAPA DE MÍDIAS BAIXADAS E EM FILA ---
+def obter_mapa_status_midias():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT media_id FROM midias WHERE status = 'COMPLETED'")
+        salvos = {row["media_id"]: "COMPLETED" for row in cursor.fetchall()}
+        
+        cursor.execute("SELECT media_id, status FROM fila")
+        em_fila = {row["media_id"]: row["status"] for row in cursor.fetchall()}
+        
+        # Junta os dois dicionários (salvos sobrepõem)
+        mapa = {**em_fila, **salvos}
+        return mapa
+
 # --- FILA DE ESPERA ---
 def adicionar_a_fila(media_id, tipo, tmdb_id, titulo, ano, qualidade, url_fonte, tmdb_info):
     with get_connection() as conn:
