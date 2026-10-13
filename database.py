@@ -86,3 +86,16 @@ def carregar_indexadores():
         cursor.execute("SELECT nome, url FROM indexadores WHERE ativo = 1")
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
+
+def listar_todos_indexadores():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM indexadores")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+
+def alternar_status_indexador(idx_id):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE indexadores SET ativo = CASE WHEN ativo = 1 THEN 0 ELSE 1 END WHERE id = ?", (idx_id,))
+        conn.commit()

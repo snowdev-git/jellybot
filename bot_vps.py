@@ -14,7 +14,9 @@ from database import (
     obter_midia,
     listar_midias,
     remover_midia,
-    carregar_indexadores
+    carregar_indexadores,
+    listar_todos_indexadores,
+    alternar_status_indexador
 )
 from server import iniciar_servidor, client
 from downloader import (
@@ -38,7 +40,8 @@ def menu_principal():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
         KeyboardButton("🎬 Novo Filme"), KeyboardButton("📺 Nova Série"),
-        KeyboardButton("🗑️ Gerenciar/Apagar"), KeyboardButton("📊 Espaço no Disco")
+        KeyboardButton("⚙️ Indexadores"), KeyboardButton("🗑️ Gerenciar/Apagar"),
+        KeyboardButton("📊 Espaço no Disco")
     )
     return markup
 
@@ -49,7 +52,7 @@ def comando_start(message):
         message.chat.id,
         f"🍿 **JellyBot + Telegram Cloud Storage**\n"
         f"📌 Servidor vinculado: `{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}`\n\n"
-        f"Escolha uma opção no menu abaixo para pesquisar e indexar mídias diretamente no Jellyfin:",
+        f"Escolha uma opção no menu abaixo para pesquisar, gerenciar indexadores e indexar mídias no Jellyfin:",
         reply_markup=menu_principal(),
         parse_mode="Markdown"
     )
@@ -65,6 +68,8 @@ def escutar_botoes(message):
     elif txt == "📺 Nova Série":
         msg = bot.send_message(message.chat.id, "Escreva o nome da série:")
         bot.register_next_step_handler(msg, pesquisar_tmdb, "tv")
+    elif txt == "⚙️ Indexadores":
+        exibir_menu_indexadores(message.chat.id)
     elif txt == "📊 Espaço no Disco":
         try:
             import shutil
@@ -76,6 +81,21 @@ def escutar_botoes(message):
             bot.send_message(message.chat.id, f"❌ Erro ao obter informações de disco: {e}")
     elif txt == "🗑️ Gerenciar/Apagar":
         menu_gerenciar_media(message.chat.id)
+
+def exibir_menu_indexadores(chat_id, message_id=None):
+    indexadores = listar_todos_indexadores()
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    for idx in indexadores:
+        status_ico = "🟢 Ativo" if idx['ativo'] == 1 else "🔴 Inativo"
+        markup.add(InlineKeyboardButton(f"{idx['nome']} — {status_ico}", callback_data=f"toggle_idx_{idx['id']}"))
+        
+    texto = "⚙️ **Gerenciador de Indexadores Stremio**\nClique para **Ativar** ou **Desativar** fontes de busca (indexadores desativados tornam as buscas muito mais rápidas):"
+    
+    if message_id:
+        bot.edit_message_text(texto, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
+    else:
+        bot.send_message(chat_id, texto, reply_markup=markup, parse_mode="Markdown")
 
 def menu_gerenciar_media(chat_id):
     markup = InlineKeyboardMarkup(row_width=2)
@@ -182,7 +202,12 @@ def callback_handler(call):
     bot.answer_callback_query(call.id)
     chat_id, dados = call.message.chat.id, call.data
 
-    if dados == "mgr_filmes":
+    if dados.startswith("toggle_idx_"):
+        idx_id = int(dados.split("_")[2])
+        alternar_status_indexador(idx_id)
+        exibir_menu_indexadores(chat_id, call.message.message_id)
+
+    elif dados == "mgr_filmes":
         filmes = listar_midias("movie")
         if not filmes:
             return bot.edit_message_text("❌ Nenhum filme registado na base de dados.", chat_id, call.message.message_id)

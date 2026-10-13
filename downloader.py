@@ -13,7 +13,6 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
-# Limite seguro para partes individuais no Telegram (1.8 GB)
 LIMITE_PARTE_BYTES = int(1.8 * 1024 * 1024 * 1024)
 
 VIDEO_MAGIC_BYTES = [
@@ -29,14 +28,11 @@ HEADERS_BROWSER = {
 }
 
 def extrair_info_stream(s: dict) -> str:
-    """Extrai qualidade, idioma (Dublado/Legendado) e servidor do stream de forma detalhada."""
     title = str(s.get("title", ""))
     name = str(s.get("name", ""))
     desc = str(s.get("description", ""))
-    
     texto_full = f"{title} {name} {desc}".lower()
 
-    # Deteção de idioma / áudio
     is_dub = any(termo in texto_full for termo in [
         "dub", "dublado", "dual", "pt-br", "ptbr", "br", "português", "portugues", "nacional", "multi"
     ])
@@ -47,7 +43,6 @@ def extrair_info_stream(s: dict) -> str:
 
     audio = "DUBLADO 🇧🇷" if is_dub else "LEGENDADO 🔤"
 
-    # Deteção de resolução
     if "4k" in texto_full or "2160p" in texto_full:
         qualidade = "4K 🌟"
     elif "1080p" in texto_full or "fhd" in texto_full:
@@ -57,7 +52,6 @@ def extrair_info_stream(s: dict) -> str:
     else:
         qualidade = "1080p FHD 🎬"
 
-    # Deteção de servidor fonte (Astra, Neon, Carbon, Azure, etc.)
     servidor = ""
     for srv in ["astra", "neon", "carbon", "azure", "fast", "s3", "torrentio"]:
         if srv in texto_full:
@@ -75,7 +69,7 @@ def resolver_url_direta(url_original: str) -> str:
         if match:
             id_mp4 = match.group(1)
             url_s3 = f"http://89.222.120.130:34871/s3v3/0-uncategorized/{id_mp4}"
-            logger.info(f"⚡ Bypass imediato aplicado: {url_original} -> {url_s3}")
+            logger.info(f"⚡ Bypass aplicado: {url_original} -> {url_s3}")
             return url_s3
 
     if "89.222.120.130" in url_original:
@@ -84,11 +78,11 @@ def resolver_url_direta(url_original: str) -> str:
     try:
         session = requests.Session()
         session.headers.update(HEADERS_BROWSER)
-        with session.get(url_original, allow_redirects=True, stream=True, timeout=8) as r:
+        with session.get(url_original, allow_redirects=True, stream=True, timeout=5) as r:
             if r.status_code == 200:
                 return r.url
     except Exception as e:
-        logger.warning(f"⚠️ Não foi possível resolver URL original ({e}). Usando link padrão.")
+        logger.warning(f"⚠️ Resolução de URL padrão mantida: {e}")
 
     return url_original
 
@@ -103,7 +97,8 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
             else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
         )
         try:
-            res = requests.get(url, headers=HEADERS_BROWSER, timeout=10)
+            # Timeout reduzido para 4 segundos por indexador para evitar lentidão
+            res = requests.get(url, headers=HEADERS_BROWSER, timeout=4)
             if res.status_code == 200:
                 streams = res.json().get("streams", [])
                 for s in streams:
@@ -116,7 +111,7 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
                             "url": url_limpa
                         })
         except Exception as e:
-            logger.warning(f"⚠️ Falha ao consultar indexador {idx['nome']}: {e}")
+            logger.warning(f"⚠️ Indexador '{idx['nome']}' indisponível ou ignorado por timeout: {e}")
 
     return resultados
 
@@ -136,7 +131,7 @@ def dividir_arquivo_binario(caminho_arquivo: str, tamanho_max_bytes: int = LIMIT
     if tamanho_total <= tamanho_max_bytes:
         return [caminho_arquivo]
 
-    logger.info(f"✂️ Ficheiro bruto de {tamanho_total / (1024**3):.2f} GB. A aplicar divisão binária em blocos de 1.8 GB...")
+    logger.info(f"✂️ Ficheiro de {tamanho_total / (1024**3):.2f} GB. Divisão binária em blocos de 1.8 GB...")
     partes_criadas = []
     base_dir, file_name = os.path.split(caminho_arquivo)
     name, ext = os.path.splitext(file_name)
@@ -151,7 +146,7 @@ def dividir_arquivo_binario(caminho_arquivo: str, tamanho_max_bytes: int = LIMIT
             with open(caminho_parte, 'wb') as f_out:
                 f_out.write(chunk_data)
             partes_criadas.append(caminho_parte)
-            logger.info(f"🧩 Bloco binário {parte_idx} criado com sucesso ({len(chunk_data) / (1024**2):.1f} MB)")
+            logger.info(f"🧩 Bloco binário {parte_idx} criado ({len(chunk_data) / (1024**2):.1f} MB)")
             parte_idx += 1
 
     return partes_criadas
@@ -230,52 +225,58 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         logger.info(f"⏳ A iniciar download temporário: {nome_base}")
         if progress_callback: progress_callback("⏳ **A verificar disponibilidade da mídia...**")
 
-        with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=30, allow_redirects=True) as r:
-            r.raise_for_status()
-            content_type = r.headers.get('Content-Type', '').lower()
+        try:
+            with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=25, allow_redirects=True) as r:
+                r.raise_for_status()
+                content_type = r.headers.get('Content-Type', '').lower()
 
-            if 'html' in content_type or 'text' in content_type:
-                raise ValueError(f"URL retornou conteúdo inválido ({content_type}) em vez de vídeo.")
+                if 'html' in content_type or 'text' in content_type:
+                    raise ValueError("A URL retornou uma página Web em vez de um arquivo de vídeo.")
 
-            total_length = r.headers.get('content-length')
-            total_bytes = int(total_length) if total_length and total_length.isdigit() else 0
+                total_length = r.headers.get('content-length')
+                total_bytes = int(total_length) if total_length and total_length.isdigit() else 0
 
-            downloaded_bytes = 0
-            dl_start_time = time.time()
-            last_dl_log_time = dl_start_time
-            last_dl_tg_time = dl_start_time
+                downloaded_bytes = 0
+                dl_start_time = time.time()
+                last_dl_log_time = dl_start_time
+                last_dl_tg_time = dl_start_time
 
-            with open(caminho_temp, 'wb') as f:
-                header_bytes = b""
-                for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
-                    if chunk:
-                        if len(header_bytes) < 64:
-                            header_bytes += chunk[:64]
-                            is_valid_video = any(magic in header_bytes for magic in VIDEO_MAGIC_BYTES)
-                            if not is_valid_video and len(header_bytes) >= 32:
-                                raise ValueError("Ficheiro descarregado não possui formato de vídeo válido.")
+                with open(caminho_temp, 'wb') as f:
+                    header_bytes = b""
+                    for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
+                        if chunk:
+                            if len(header_bytes) < 64:
+                                header_bytes += chunk[:64]
+                                is_valid_video = any(magic in header_bytes for magic in VIDEO_MAGIC_BYTES)
+                                if not is_valid_video and len(header_bytes) >= 32:
+                                    raise ValueError("O arquivo do servidor de origem não é um vídeo válido.")
 
-                        downloaded_bytes += len(chunk)
-                        f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            f.write(chunk)
 
-                        now = time.time()
-                        if now - last_dl_log_time >= 2.0 or (total_bytes > 0 and downloaded_bytes == total_bytes):
-                            elapsed = now - dl_start_time
-                            speed = (downloaded_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                            dl_mb = downloaded_bytes / (1024 * 1024)
+                            now = time.time()
+                            if now - last_dl_log_time >= 2.0 or (total_bytes > 0 and downloaded_bytes == total_bytes):
+                                elapsed = now - dl_start_time
+                                speed = (downloaded_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                                dl_mb = downloaded_bytes / (1024 * 1024)
 
-                            if total_bytes > 0:
-                                total_mb = total_bytes / (1024 * 1024)
-                                pct = (downloaded_bytes / total_bytes) * 100
-                                logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
+                                if total_bytes > 0:
+                                    total_mb = total_bytes / (1024 * 1024)
+                                    pct = (downloaded_bytes / total_bytes) * 100
+                                    logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
 
-                                if progress_callback and (now - last_dl_tg_time >= 5.0):
-                                    progress_callback(f"⏳ **A transferir mídia para o servidor...**\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
-                                    last_dl_tg_time = now
-                            else:
-                                logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f} MB baixados - {speed:.2f} MB/s")
+                                    if progress_callback and (now - last_dl_tg_time >= 5.0):
+                                        progress_callback(f"⏳ **A transferir mídia para o servidor...**\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                                        last_dl_tg_time = now
+                                else:
+                                    logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f} MB baixados - {speed:.2f} MB/s")
 
-                            last_dl_log_time = now
+                                last_dl_log_time = now
+
+        except requests.exceptions.HTTPError as errh:
+            raise ValueError(f"O servidor da fonte retornou erro de conexão HTTP ({errh.response.status_code}). Tente outra opção ou cole um link direto.")
+        except requests.exceptions.RequestException as err:
+            raise ValueError(f"Falha de conexão com a fonte: {err}")
 
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
