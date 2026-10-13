@@ -21,7 +21,9 @@ from database import (
 )
 from downloader import buscar_fontes_indexadores, processar_e_hospedar_midia
 
-# --- AUXILIAR PARA NOTIFICAR O TELEGRAM ---
+# ESTADO DA FILA (PAUSADA OU RODANDO)
+FILA_PAUSADA = False
+
 async def notificar_telegram_admin(texto: str, caminho_file: str = None):
     if Config.ADMIN_ID and Config.ADMIN_ID != 0:
         try:
@@ -34,47 +36,49 @@ async def notificar_telegram_admin(texto: str, caminho_file: str = None):
 
 # --- WORKER AUTOMÁTICO DA FILA DE ESPERA ---
 async def worker_fila_processamento():
+    global FILA_PAUSADA
     logger.info("⚙️ Worker de Fila de Espera iniciado e monitorando novas solicitações...")
     while True:
         try:
-            item = obter_proximo_fila()
-            if item:
-                item_id = item['id']
-                titulo = item['titulo']
-                logger.info(f"▶️ [FILA] A iniciar processamento do item: {titulo} ({item['qualidade']})")
-                
-                msg_inicio = f"⏳ **[JellyBot Web] Processamento Iniciado:**\n🎬 `{titulo}`\n🎧 Qualidade: `{item['qualidade']}`"
-                await notificar_telegram_admin(msg_inicio)
-                
-                atualizar_status_fila(item_id, 'PROCESSING', '⏳ A verificar fonte de vídeo...')
+            if not FILA_PAUSADA:
+                item = obter_proximo_fila()
+                if item:
+                    item_id = item['id']
+                    titulo = item['titulo']
+                    logger.info(f"▶️ [FILA] A iniciar processamento do item: {titulo} ({item['qualidade']})")
+                    
+                    msg_inicio = f"⏳ **[JellyBot Web] Processamento Iniciado:**\\n🎬 `{titulo}`\\n🎧 Qualidade: `{item['qualidade']}`"
+                    await notificar_telegram_admin(msg_inicio)
+                    
+                    atualizar_status_fila(item_id, 'PROCESSING', '⏳ A verificar fonte de vídeo...')
 
-                def callback_progresso(msg_status):
-                    atualizar_status_fila(item_id, 'PROCESSING', str(msg_status))
+                    def callback_progresso(msg_status):
+                        atualizar_status_fila(item_id, 'PROCESSING', str(msg_status))
 
-                sucesso, msg_res, caminho_strm = await processar_e_hospedar_midia(
-                    url_fonte=item['url_fonte'],
-                    tipo=item['tipo'],
-                    tmdb_info=item['tmdb_info'],
-                    qualidade=item['qualidade'],
-                    progress_callback=callback_progresso
-                )
-
-                if sucesso:
-                    atualizar_status_fila(item_id, 'COMPLETED', '✅ Processado com sucesso e ativo no Jellyfin!')
-                    logger.info(f"🎉 [FILA] Item {titulo} concluído com sucesso!")
-                    msg_sucesso = (
-                        f"🎉 **[JellyBot Web] Mídia Concluída com Sucesso!**\n\n"
-                        f"🎬 **Mídia:** `{titulo}`\n"
-                        f"🎧 **Qualidade:** `{item['qualidade']}`\n"
-                        f"📂 **Caminho .strm:** `{caminho_strm}`\n\n"
-                        f"👉 _Disponível no Jellyfin!_"
+                    sucesso, msg_res, caminho_strm = await processar_e_hospedar_midia(
+                        url_fonte=item['url_fonte'],
+                        tipo=item['tipo'],
+                        tmdb_info=item['tmdb_info'],
+                        qualidade=item['qualidade'],
+                        progress_callback=callback_progresso
                     )
-                    await notificar_telegram_admin(msg_sucesso, caminho_file=caminho_strm)
-                else:
-                    atualizar_status_fila(item_id, 'FAILED', '❌ Falha ao processar', erro_msg=str(msg_res))
-                    logger.error(f"❌ [FILA] Falha no item {titulo}: {msg_res}")
-                    msg_erro = f"❌ **[JellyBot Web] Falha ao Processar:**\n🎬 `{titulo}`\n⚠️ Erro: `{msg_res}`"
-                    await notificar_telegram_admin(msg_erro)
+
+                    if sucesso:
+                        atualizar_status_fila(item_id, 'COMPLETED', '✅ Processado com sucesso e ativo no Jellyfin!')
+                        logger.info(f"🎉 [FILA] Item {titulo} concluído com sucesso!")
+                        msg_sucesso = (
+                            f"🎉 **[JellyBot Web] Mídia Concluída com Sucesso!**\\n\\n"
+                            f"🎬 **Mídia:** `{titulo}`\\n"
+                            f"🎧 **Qualidade:** `{item['qualidade']}`\\n"
+                            f"📂 **Caminho .strm:** `{caminho_strm}`\\n\\n"
+                            f"👉 _Disponível no Jellyfin!_"
+                        )
+                        await notificar_telegram_admin(msg_sucesso, caminho_file=caminho_strm)
+                    else:
+                        atualizar_status_fila(item_id, 'FAILED', '❌ Falha ao processar', erro_msg=str(msg_res))
+                        logger.error(f"❌ [FILA] Falha no item {titulo}: {msg_res}")
+                        msg_erro = f"❌ **[JellyBot Web] Falha ao Processar:**\\n🎬 `{titulo}`\\n⚠️ Erro: `{msg_res}`"
+                        await notificar_telegram_admin(msg_erro)
 
             await asyncio.sleep(3)
         except Exception as e:
@@ -188,9 +192,9 @@ async def api_search(request):
         
         for item in res:
             if tipo == 'movie':
-                nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(item.get("title", "Filme"))).strip()
+                nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(item.get("title", "Filme"))).strip()
                 ano = str(item.get("release_date", "0000"))[:4]
-                nome_slug = re.sub(r'\W+', '_', nome_limpo).lower()
+                nome_slug = re.sub(r'\\W+', '_', nome_limpo).lower()
                 media_id = f"movie_{item.get('id')}_{nome_slug}_{ano}"
             else:
                 media_id = f"tv_show_{item.get('id')}"
@@ -211,9 +215,9 @@ async def api_details(request):
         mapa_status = obter_mapa_status_midias()
 
         if tipo == 'movie':
-            nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(res.get("title", "Filme"))).strip()
+            nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(res.get("title", "Filme"))).strip()
             ano = str(res.get("release_date", "0000"))[:4]
-            nome_slug = re.sub(r'\W+', '_', nome_limpo).lower()
+            nome_slug = re.sub(r'\\W+', '_', nome_limpo).lower()
             media_id = f"movie_{res.get('id')}_{nome_slug}_{ano}"
             res['status_local'] = mapa_status.get(media_id)
 
@@ -274,13 +278,13 @@ async def api_add_queue(request):
     url_fonte = data.get("url_fonte")
 
     if tipo == "movie":
-        nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(tmdb_info.get("title", "Filme"))).strip()
+        nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(tmdb_info.get("title", "Filme"))).strip()
         ano = str(tmdb_info.get("release_date", "0000"))[:4]
-        nome_slug = re.sub(r'\W+', '_', nome_limpo).lower()
+        nome_slug = re.sub(r'\\W+', '_', nome_limpo).lower()
         media_id = f"movie_{tmdb_info.get('id')}_{nome_slug}_{ano}"
         titulo = f"{nome_limpo} ({ano})"
     else:
-        nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(tmdb_info.get("name", "Serie"))).strip()
+        nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(tmdb_info.get("name", "Serie"))).strip()
         season_num = int(data.get("season", 1))
         ep_num = int(data.get("episode", 1))
         tmdb_info['season_number'] = season_num
@@ -291,16 +295,22 @@ async def api_add_queue(request):
 
     adicionar_a_fila(media_id, tipo, tmdb_info.get('id'), titulo, ano, qualidade, url_fonte, tmdb_info)
     
-    # Notificar Bot
-    msg_add = f"📥 **[Web UI] Novo Item Adicionado à Fila:**\n🎬 `{titulo}`\n🎧 Qualidade: `{qualidade}`"
+    msg_add = f"📥 **[Web UI] Novo Item Adicionado à Fila:**\\n🎬 `{titulo}`\\n🎧 Qualidade: `{qualidade}`"
     await notificar_telegram_admin(msg_add)
 
     return web.json_response({"success": True, "message": f"{titulo} adicionado à fila!"})
 
+async def api_toggle_queue_pause(request):
+    global FILA_PAUSADA
+    FILA_PAUSADA = not FILA_PAUSADA
+    status_str = "PAUSADA ⏸️" if FILA_PAUSADA else "RODANDO ▶️"
+    await notificar_telegram_admin(f"⚙️ **[JellyBot Web] Estado da Fila:** `{status_str}`")
+    return web.json_response({"success": True, "fila_pausada": FILA_PAUSADA})
+
 async def api_get_queue(request):
     fila = listar_fila()
     salvos = listar_midias()
-    return web.json_response({"fila": fila, "salvos": salvos})
+    return web.json_response({"fila": fila, "salvos": salvos, "fila_pausada": FILA_PAUSADA})
 
 async def api_retry_queue(request):
     data = await request.json()
@@ -371,27 +381,29 @@ async def handle_web_app(request):
                 <i class="fa-solid fa-arrow-left"></i> Voltar para Resultados
             </button>
 
-            <!-- Banner do Título -->
             <div id="detail-header" class="glass p-6 rounded-3xl flex flex-col md:flex-row gap-6 items-start"></div>
 
-            <!-- Conteúdo da Série: Temporadas e Episódios -->
             <div id="detail-tv-content" class="hidden space-y-6">
                 <div class="flex items-center space-x-3 overflow-x-auto pb-2" id="season-tabs"></div>
                 <div id="episodes-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
             </div>
 
-            <!-- Conteúdo do Filme: Fontes diretamente -->
             <div id="detail-movie-content" class="hidden space-y-4 glass p-6 rounded-3xl">
                 <h3 class="text-lg font-extrabold text-sky-400 mb-2"><i class="fa-solid fa-cloud-arrow-down mr-2"></i>Opcoes de Download e Fontes</h3>
                 <div id="movie-sources-list" class="space-y-3"></div>
             </div>
         </div>
 
-        <!-- SEÇÃO 2: FILA -->
+        <!-- SEÇÃO 2: FILA COM CONTROLE DE PAUSA -->
         <div id="sec-queue" class="hidden space-y-4">
-            <div class="flex justify-between items-center mb-2">
-                <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2"><i class="fa-solid fa-list-check text-sky-400"></i> Fila de Automacao & Status</h2>
-                <span class="text-xs text-slate-400"><i class="fa-solid fa-sync fa-spin mr-1 text-sky-400"></i>Atualizacao continua</span>
+            <div class="glass p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-center gap-4">
+                <div class="flex items-center gap-3">
+                    <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2"><i class="fa-solid fa-list-check text-sky-400"></i> Fila de Automacao</h2>
+                    <span id="queue-status-badge" class="text-xs px-3 py-1 rounded-full font-bold"></span>
+                </div>
+                <button id="btn-toggle-pause" onclick="alternarPausaFila()" class="px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg">
+                    <!-- Gerado via JS -->
+                </button>
             </div>
             <div id="queue-list" class="space-y-4"></div>
         </div>
@@ -424,6 +436,7 @@ async def handle_web_app(request):
     <script>
         let currentDetailMedia = null;
         let currentSelectedEp = null;
+        let isQueuePaused = false;
 
         function tab(t) {
             ['search', 'detail', 'queue', 'library'].forEach(s => {
@@ -660,17 +673,39 @@ async def handle_web_app(request):
             tab('queue');
         }
 
+        async function alternarPausaFila() {
+            const res = await fetch('/api/queue/toggle_pause', { method: 'POST' }).then(r => r.json());
+            atualizarFilaEBiblioteca();
+        }
+
         async function atualizarFilaEBiblioteca() {
             const data = await fetch('/api/queue').then(r => r.json());
+            isQueuePaused = data.fila_pausada;
 
-            // Renderizar Fila com Estatísticas em Tempo Real
+            // Atualizar status do botão de Pausa/Start
+            const badge = document.getElementById('queue-status-badge');
+            const btnPause = document.getElementById('btn-toggle-pause');
+
+            if(isQueuePaused) {
+                badge.className = 'text-xs px-3 py-1 rounded-full font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30';
+                badge.innerHTML = '<i class="fa-solid fa-pause mr-1"></i>FILA PAUSADA';
+                btnPause.className = 'px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30';
+                btnPause.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Fila';
+            } else {
+                badge.className = 'text-xs px-3 py-1 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                badge.innerHTML = '<i class="fa-solid fa-play mr-1"></i>FILA ATIVA';
+                btnPause.className = 'px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/30';
+                btnPause.innerHTML = '<i class="fa-solid fa-pause"></i> Pausar Fila';
+            }
+
+            // Renderizar Fila
             let qHtml = '';
             (data.fila || []).forEach(item => {
-                let badge = 'bg-slate-800 text-slate-300';
+                let badgeItem = 'bg-slate-800 text-slate-300';
                 let ico = 'fa-clock';
-                if(item.status === 'PROCESSING') { badge = 'bg-blue-600/30 border border-blue-500/50 text-blue-400 animate-pulse'; ico = 'fa-spinner fa-spin'; }
-                if(item.status === 'COMPLETED') { badge = 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-400'; ico = 'fa-circle-check'; }
-                if(item.status === 'FAILED') { badge = 'bg-rose-500/20 border border-rose-500/40 text-rose-400'; ico = 'fa-triangle-exclamation'; }
+                if(item.status === 'PROCESSING') { badgeItem = 'bg-blue-600/30 border border-blue-500/50 text-blue-400 animate-pulse'; ico = 'fa-spinner fa-spin'; }
+                if(item.status === 'COMPLETED') { badgeItem = 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-400'; ico = 'fa-circle-check'; }
+                if(item.status === 'FAILED') { badgeItem = 'bg-rose-500/20 border border-rose-500/40 text-rose-400'; ico = 'fa-triangle-exclamation'; }
 
                 let progText = (item.progresso_texto || '').replace(/\\n/g, '<br>').replace(/`/g, '');
 
@@ -680,7 +715,7 @@ async def handle_web_app(request):
                         <div>
                             <div class="flex items-center space-x-2">
                                 <span class="font-extrabold text-white text-base">${item.titulo}</span>
-                                <span class="text-xs px-3 py-1 rounded-full ${badge} font-bold flex items-center gap-1"><i class="fa-solid ${ico}"></i>${item.status}</span>
+                                <span class="text-xs px-3 py-1 rounded-full ${badgeItem} font-bold flex items-center gap-1"><i class="fa-solid ${ico}"></i>${item.status}</span>
                             </div>
                             <p class="text-xs text-sky-400 font-bold mt-1">${item.qualidade}</p>
                         </div>
@@ -728,7 +763,6 @@ async def handle_web_app(request):
             atualizarFilaEBiblioteca();
         }
 
-        // Atualização automática contínua
         setInterval(() => {
             if(!document.getElementById('sec-queue').classList.contains('hidden')) {
                 atualizarFilaEBiblioteca();
@@ -755,6 +789,7 @@ async def iniciar_servidor():
     app.router.add_get("/api/episodes", api_episodes)
     app.router.add_get("/api/sources", api_sources)
     app.router.add_post("/api/queue/add", api_add_queue)
+    app.router.add_post("/api/queue/toggle_pause", api_toggle_queue_pause)
     app.router.add_get("/api/queue", api_get_queue)
     app.router.add_post("/api/queue/retry", api_retry_queue)
     app.router.add_post("/api/queue/delete", api_delete_queue)

@@ -150,7 +150,7 @@ def dividir_arquivo_binario(caminho_arquivo: str, tamanho_max_bytes: int = LIMIT
 
     return partes_criadas
 
-async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None, max_workers: int = 8):
+async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None, max_workers: int = 4):
     try:
         tamanho_total = os.path.getsize(caminho_arquivo)
         tamanho_parte = 512 * 1024
@@ -190,6 +190,7 @@ async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None,
 
                     fila_partes.task_done()
 
+        # Usando 4 workers para evitar estourar a tabela de conexões de rede
         workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
         await asyncio.gather(*workers)
 
@@ -265,7 +266,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                                     logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
 
                                     if progress_callback and (now - last_dl_tg_time >= 5.0):
-                                        progress_callback(f"⏳ **A transferir mídia para o servidor...**\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                                        progress_callback(f"⏳ **A transferir mídia para o servidor...**\\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
                                         last_dl_tg_time = now
                                 else:
                                     logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f} MB baixados - {speed:.2f} MB/s")
@@ -321,13 +322,13 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                     last_up_log_time[0] = now
 
                     if progress_callback and (now - last_up_tg_time[0] >= 5.0 or current == total):
-                        progress_callback(f"🚀 **A guardar no Telegram Storage{tag_parte}...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                        progress_callback(f"🚀 **A guardar no Telegram Storage{tag_parte}...**\\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
                         last_up_tg_time[0] = now
 
             handle_arquivo = await upload_paralelo_telegram(
                 arq_parte,
                 progress_callback=upload_progress,
-                max_workers=8
+                max_workers=4
             )
             msg = await client.send_file(
                 Config.CANAL_STORAGE_ID,

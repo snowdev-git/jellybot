@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import asyncio
 import threading
 import telebot
@@ -444,7 +445,7 @@ def callback_handler(call):
                         InlineKeyboardButton("🔙 Lista de Episódios", callback_data=f"ep_{tmdb_id}_{season_num}")
                     )
 
-                bot.edit_message_text(f"❌ **Falha ao processar mídia:** `{msg_resultado}`", chat_id, msg_status.message_id, parse_mode="Markdown")
+                bot.edit_message_text(f"❌ **Falha ao processar mídia:** `{msg_resultado}`", chat_id, msg_status.message_id, reply_markup=markup_fail, parse_mode="Markdown")
 
         threading.Thread(target=tarefa_download, daemon=True).start()
 
@@ -454,7 +455,15 @@ def rodar_loop_principal():
     MAIN_LOOP.run_until_complete(iniciar_servidor())
     MAIN_LOOP.run_forever()
 
+def rodar_bot_com_reconexao():
+    while True:
+        try:
+            bot.infinity_polling(timeout=15, long_polling_timeout=10)
+        except Exception as e:
+            logger.warning(f"⚠️ Reconexão temporária do Telegram Polling tratada: {e}")
+            time.sleep(3)
+
 if __name__ == "__main__":
     logger.info("🚀 A iniciar JellyBot...")
     threading.Thread(target=rodar_loop_principal, daemon=True).start()
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    rodar_bot_com_reconexao()
