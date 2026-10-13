@@ -32,7 +32,7 @@ MAIN_LOOP = asyncio.new_event_loop()
 
 def verificar_admin(message) -> bool:
     if Config.ADMIN_ID != 0 and message.from_user.id != Config.ADMIN_ID:
-        bot.reply_to(message, "⛔ Acesso negado. Apenas o administrador configurado pode utilizar este bot.")
+        bot.reply_to(message, "⛔ Acesso negado.")
         return False
     return True
 
@@ -46,7 +46,6 @@ def menu_principal():
     return markup
 
 def responder_ou_editar(call, texto, reply_markup=None):
-    """Trata edição de mensagens normais vs mensagens de documentos/anexos."""
     try:
         if call.message.document:
             bot.send_message(call.message.chat.id, texto, reply_markup=reply_markup, parse_mode="Markdown")
@@ -62,7 +61,8 @@ def comando_start(message):
     bot.send_message(
         message.chat.id,
         f"🍿 **JellyBot + Telegram Cloud Storage**\n"
-        f"📌 Servidor vinculado: `{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}`\n\n"
+        f"📌 Servidor vinculado: `{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}`\n"
+        f"🌐 Painel Web: `http://{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}/web`\n\n"
         f"Escolha uma opção no menu abaixo para pesquisar, gerenciar indexadores e indexar mídias no Jellyfin:",
         reply_markup=menu_principal(),
         parse_mode="Markdown"
@@ -155,19 +155,17 @@ def receber_link_manual(message):
         except: pass
 
     def tarefa_download_manual():
-        loop_async = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop_async)
-
-        sucesso, msg_resultado, caminho_strm = loop_async.run_until_complete(
+        future = asyncio.run_coroutine_threadsafe(
             processar_e_hospedar_midia(
                 url_fonte=url_link,
                 tipo=dados_sessao["tipo"],
                 tmdb_info=dados_sessao["tmdb_info"],
                 qualidade="LINK MANUAL 🔗",
-                main_loop=MAIN_LOOP,
                 progress_callback=atualizar_status_bot
-            )
+            ),
+            MAIN_LOOP
         )
+        sucesso, msg_resultado, caminho_strm = future.result()
 
         if sucesso:
             msg_sucesso = (
@@ -385,19 +383,17 @@ def callback_handler(call):
             except: pass
 
         def tarefa_download():
-            loop_async = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop_async)
-
-            sucesso, msg_resultado, caminho_strm = loop_async.run_until_complete(
+            future = asyncio.run_coroutine_threadsafe(
                 processar_e_hospedar_midia(
                     url_fonte=item["url"],
                     tipo=dados_sessao["tipo"],
                     tmdb_info=dados_sessao["tmdb_info"],
                     qualidade=item["qualidade"],
-                    main_loop=MAIN_LOOP,
                     progress_callback=atualizar_status_bot
-                )
+                ),
+                MAIN_LOOP
             )
+            sucesso, msg_resultado, caminho_strm = future.result()
 
             if sucesso:
                 msg_sucesso = (

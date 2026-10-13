@@ -13,7 +13,6 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
-# Limite seguro para partes individuais no Telegram (1.8 GB)
 LIMITE_PARTE_BYTES = int(1.8 * 1024 * 1024 * 1024)
 
 VIDEO_MAGIC_BYTES = [
@@ -79,7 +78,6 @@ def resolver_url_direta(url_original: str) -> str:
     try:
         session = requests.Session()
         session.headers.update(HEADERS_BROWSER)
-        # Timeout de resolução aumentado para 15 segundos
         with session.get(url_original, allow_redirects=True, stream=True, timeout=15) as r:
             if r.status_code == 200:
                 return r.url
@@ -99,7 +97,6 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
             else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
         )
         try:
-            # Timeout ajustado para 15 segundos por indexador
             res = requests.get(url, headers=HEADERS_BROWSER, timeout=15)
             if res.status_code == 200:
                 streams = res.json().get("streams", [])
@@ -113,7 +110,7 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
                             "url": url_limpa
                         })
         except Exception as e:
-            logger.warning(f"⚠️ Indexador '{idx['nome']}' indisponível ou ignorado por timeout: {e}")
+            logger.warning(f"⚠️ Indexador '{idx['nome']}' indisponível: {e}")
 
     return resultados
 
@@ -201,7 +198,7 @@ async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None,
         logger.warning(f"⚠️ Envio paralelo alternado para padrão: {e}")
         return await client.upload_file(caminho_arquivo, progress_callback=progress_callback, part_size_kb=512)
 
-async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict, qualidade: str, main_loop, progress_callback=None):
+async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict, qualidade: str, progress_callback=None):
     if tipo == "movie":
         nome_limpo = limpar_nome(tmdb_info.get("title", "Filme"))
         ano = str(tmdb_info.get("release_date", "0000"))[:4]
@@ -228,7 +225,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if progress_callback: progress_callback("⏳ **A verificar disponibilidade da mídia...**")
 
         try:
-            # Timeout de download estendido para 30 segundos
             with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=30, allow_redirects=True) as r:
                 r.raise_for_status()
                 content_type = r.headers.get('Content-Type', '').lower()
@@ -328,22 +324,19 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                         progress_callback(f"🚀 **A guardar no Telegram Storage{tag_parte}...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
                         last_up_tg_time[0] = now
 
-            async def upload_task(caminho):
-                handle_arquivo = await upload_paralelo_telegram(
-                    caminho,
-                    progress_callback=upload_progress,
-                    max_workers=8
-                )
-                msg = await client.send_file(
-                    Config.CANAL_STORAGE_ID,
-                    handle_arquivo,
-                    caption=legenda,
-                    parse_mode='md'
-                )
-                return msg.id
-
-            future = asyncio.run_coroutine_threadsafe(upload_task(arq_parte), main_loop)
-            msg_ids_salvos.append(str(future.result()))
+            # Chamada assíncrona direta sem run_coroutine_threadsafe
+            handle_arquivo = await upload_paralelo_telegram(
+                arq_parte,
+                progress_callback=upload_progress,
+                max_workers=8
+            )
+            msg = await client.send_file(
+                Config.CANAL_STORAGE_ID,
+                handle_arquivo,
+                caption=legenda,
+                parse_mode='md'
+            )
+            msg_ids_salvos.append(str(msg.id))
 
         str_msg_ids = ",".join(msg_ids_salvos)
 

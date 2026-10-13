@@ -33,7 +33,6 @@ client = TelegramClient(
 
 # --- WORKER AUTOMÁTICO DA FILA DE ESPERA ---
 async def worker_fila_processamento():
-    """Worker que roda continuamente em segundo plano processando item por item da fila."""
     logger.info("⚙️ Worker de Fila de Espera iniciado e monitorando novas solicitações...")
     while True:
         try:
@@ -48,13 +47,11 @@ async def worker_fila_processamento():
                 def callback_progresso(msg_status):
                     atualizar_status_fila(item_id, 'PROCESSING', str(msg_status))
 
-                loop = asyncio.get_event_loop()
                 sucesso, msg_res, caminho_strm = await processar_e_hospedar_midia(
                     url_fonte=item['url_fonte'],
                     tipo=item['tipo'],
                     tmdb_info=item['tmdb_info'],
                     qualidade=item['qualidade'],
-                    main_loop=loop,
                     progress_callback=callback_progresso
                 )
 
@@ -65,12 +62,12 @@ async def worker_fila_processamento():
                     atualizar_status_fila(item_id, 'FAILED', '❌ Falha ao processar', erro_msg=str(msg_res))
                     logger.error(f"❌ [FILA] Falha no item {titulo}: {msg_res}")
 
-            await asyncio.sleep(4)
+            await asyncio.sleep(3)
         except Exception as e:
             logger.error(f"⚠️ Erro no worker da fila: {e}")
             await asyncio.sleep(5)
 
-# --- HANDLERS DE STREAMING E API ---
+# --- STREAMING DE VÍDEO ---
 async def handle_stream(request):
     media_id = request.match_info.get("media_id")
     midia = obter_midia(media_id)
@@ -164,7 +161,7 @@ async def handle_stream(request):
         logger.error(f"❌ Erro ao servir stream {media_id}: {e}")
         return web.Response(status=500, text=f"Erro interno no servidor de streaming: {e}")
 
-# --- API PARA A INTERFACE WEB ---
+# --- API DA WEB UI ---
 async def api_search(request):
     q = request.query.get('q', '').strip()
     tipo = request.query.get('tipo', 'movie')
@@ -250,7 +247,7 @@ async def api_delete_queue(request):
         remover_midia(media_id)
     return web.json_response({"success": True})
 
-# --- PÁGINA WEB RICA (SINGLE PAGE APP INTERATIVA) ---
+# --- PÁGINA WEB ---
 async def handle_web_app(request):
     html = """<!DOCTYPE html>
 <html lang="pt-BR">
@@ -266,7 +263,6 @@ async def handle_web_app(request):
     </style>
 </head>
 <body class="min-h-screen pb-12">
-    <!-- Navbar -->
     <nav class="glass sticky top-0 z-50 px-6 py-4 mb-8 flex justify-between items-center shadow-lg">
         <div class="flex items-center space-x-3">
             <span class="text-3xl">🍿</span>
@@ -293,10 +289,8 @@ async def handle_web_app(request):
                 </div>
             </div>
 
-            <!-- Resultados do TMDB -->
             <div id="results-tmdb" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6"></div>
 
-            <!-- Modal de Fontes / Qualidades -->
             <div id="sources-modal" class="hidden glass p-6 rounded-2xl border-2 border-sky-500/30 space-y-4">
                 <div class="flex justify-between items-center border-b border-slate-700 pb-3">
                     <h3 id="sources-title" class="text-lg font-bold text-sky-400"></h3>
@@ -324,16 +318,16 @@ async def handle_web_app(request):
             </div>
         </div>
 
-        <!-- SEÇÃO 2: FILA DE ESPERA -->
+        <!-- SEÇÃO 2: FILA -->
         <div id="sec-queue" class="hidden space-y-4">
             <div class="flex justify-between items-center mb-2">
                 <h2 class="text-xl font-bold text-slate-200">⏳ Fila de Automacao & Status</h2>
-                <span class="text-xs text-slate-400"><i class="fa-solid fa-rotate mr-1"></i>Atualizando em tempo real (a cada 3s)</span>
+                <span class="text-xs text-slate-400"><i class="fa-solid fa-rotate mr-1"></i>Atualizando em tempo real</span>
             </div>
             <div id="queue-list" class="space-y-3"></div>
         </div>
 
-        <!-- SEÇÃO 3: BIBLIOTECA SALVA -->
+        <!-- SEÇÃO 3: BIBLIOTECA -->
         <div id="sec-library" class="hidden space-y-4">
             <h2 class="text-xl font-bold text-slate-200 mb-2">📚 Midias Ativas no Jellyfin</h2>
             <div id="library-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
@@ -365,7 +359,7 @@ async def handle_web_app(request):
             res.forEach(item => {
                 const tit = item.title || item.name;
                 const ano = (item.release_date || item.first_air_date || '0000').substring(0,4);
-                const poster = item.poster_path ? `https://image.tmdb.org/t/px500${item.poster_path}` : 'https://via.placeholder.com/300x450?text=Sem+Capa';
+                const poster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450?text=Sem+Capa';
                 
                 html += `
                 <div class="glass rounded-xl overflow-hidden shadow-lg flex flex-col justify-between hover:border-sky-500/50 transition">
@@ -384,7 +378,7 @@ async def handle_web_app(request):
 
         async function selecionarMedia(tmdbId, tipo) {
             document.getElementById('sources-modal').classList.remove('hidden');
-            document.getElementById('sources-title').innerText = '🔍 Carregando fontes e qualidades nos indexadores...';
+            document.getElementById('sources-title').innerText = '🔍 Carregando fontes nos indexadores...';
             document.getElementById('sources-list').innerHTML = '<div class="text-center py-4 text-sky-400 font-bold"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Buscando streams...</div>';
 
             if(tipo === 'tv') {
@@ -460,7 +454,6 @@ async def handle_web_app(request):
         async function atualizarFilaEBiblioteca() {
             const data = await fetch('/api/queue').then(r => r.json());
 
-            // Renderizar Fila
             let qHtml = '';
             (data.fila || []).forEach(item => {
                 let badge = 'bg-slate-700 text-slate-300';
@@ -488,7 +481,6 @@ async def handle_web_app(request):
             });
             document.getElementById('queue-list').innerHTML = qHtml || '<p class="text-slate-400 text-sm">Fila vazia.</p>';
 
-            // Renderizar Biblioteca
             let lHtml = '';
             (data.salvos || []).forEach(m => {
                 lHtml += `
@@ -519,7 +511,6 @@ async def handle_web_app(request):
             atualizarFilaEBiblioteca();
         }
 
-        // Auto-refresh da fila a cada 3 segundos
         setInterval(() => {
             if(!document.getElementById('sec-queue').classList.contains('hidden')) {
                 atualizarFilaEBiblioteca();
@@ -534,16 +525,14 @@ async def iniciar_servidor():
     await client.start(bot_token=Config.TELEGRAM_TOKEN)
     logger.info("🤖 Sessão do Telethon iniciada no servidor HTTP.")
 
-    # Inicia o worker assíncrono de processamento contínuo da fila
+    # Inicia o worker assíncrono continuo
     asyncio.create_task(worker_fila_processamento())
 
     app = web.Application()
     
-    # Rotas de Streaming e Dashboard
     app.router.add_route("*", "/stream/{media_id}", handle_stream)
     app.router.add_get("/web", handle_web_app)
     
-    # API da Web UI
     app.router.add_get("/api/search", api_search)
     app.router.add_get("/api/sources", api_sources)
     app.router.add_post("/api/queue/add", api_add_queue)
