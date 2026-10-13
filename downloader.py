@@ -11,7 +11,7 @@ from telethon.tl.types import InputFileBig
 from config import Config
 from logger import logger
 from database import salvar_midia, carregar_indexadores
-from server import client
+from telegram_client import client
 
 LIMITE_PARTE_BYTES = int(1.8 * 1024 * 1024 * 1024)
 
@@ -324,7 +324,6 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                         progress_callback(f"🚀 **A guardar no Telegram Storage{tag_parte}...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
                         last_up_tg_time[0] = now
 
-            # Chamada assíncrona direta sem run_coroutine_threadsafe
             handle_arquivo = await upload_paralelo_telegram(
                 arq_parte,
                 progress_callback=upload_progress,

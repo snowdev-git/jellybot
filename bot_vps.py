@@ -8,6 +8,7 @@ import requests
 
 from config import Config
 from logger import logger
+from telegram_client import client
 from database import (
     init_db,
     salvar_midia,
@@ -18,7 +19,7 @@ from database import (
     listar_todos_indexadores,
     alternar_status_indexador
 )
-from server import iniciar_servidor, client
+from server import iniciar_servidor
 from downloader import (
     buscar_fontes_indexadores,
     processar_e_hospedar_midia,
@@ -443,7 +444,7 @@ def callback_handler(call):
                         InlineKeyboardButton("🔙 Lista de Episódios", callback_data=f"ep_{tmdb_id}_{season_num}")
                     )
 
-                bot.edit_message_text(f"❌ **Falha ao processar mídia:** `{msg_resultado}`", chat_id, msg_status.message_id, reply_markup=markup_fail, parse_mode="Markdown")
+                bot.edit_message_text(f"❌ **Falha ao processar mídia:** `{msg_resultado}`", chat_id, msg_status.message_id, parse_mode="Markdown")
 
         threading.Thread(target=tarefa_download, daemon=True).start()
 
