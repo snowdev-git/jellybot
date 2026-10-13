@@ -13,6 +13,7 @@ from logger import logger
 from database import salvar_midia, carregar_indexadores
 from server import client
 
+# Limite seguro para partes individuais no Telegram (1.8 GB)
 LIMITE_PARTE_BYTES = int(1.8 * 1024 * 1024 * 1024)
 
 VIDEO_MAGIC_BYTES = [
@@ -78,7 +79,8 @@ def resolver_url_direta(url_original: str) -> str:
     try:
         session = requests.Session()
         session.headers.update(HEADERS_BROWSER)
-        with session.get(url_original, allow_redirects=True, stream=True, timeout=5) as r:
+        # Timeout de resolução aumentado para 15 segundos
+        with session.get(url_original, allow_redirects=True, stream=True, timeout=15) as r:
             if r.status_code == 200:
                 return r.url
     except Exception as e:
@@ -97,8 +99,8 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
             else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
         )
         try:
-            # Timeout reduzido para 4 segundos por indexador para evitar lentidão
-            res = requests.get(url, headers=HEADERS_BROWSER, timeout=4)
+            # Timeout ajustado para 15 segundos por indexador
+            res = requests.get(url, headers=HEADERS_BROWSER, timeout=15)
             if res.status_code == 200:
                 streams = res.json().get("streams", [])
                 for s in streams:
@@ -226,7 +228,8 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         if progress_callback: progress_callback("⏳ **A verificar disponibilidade da mídia...**")
 
         try:
-            with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=25, allow_redirects=True) as r:
+            # Timeout de download estendido para 30 segundos
+            with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=30, allow_redirects=True) as r:
                 r.raise_for_status()
                 content_type = r.headers.get('Content-Type', '').lower()
 
