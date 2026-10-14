@@ -22,7 +22,6 @@ from database import (
 )
 from downloader import buscar_fontes_indexadores, processar_e_hospedar_midia
 
-# ESTADO DA FILA (PAUSADA OU RODANDO)
 FILA_PAUSADA = False
 
 async def notificar_telegram_admin(texto: str, caminho_file: str = None):
@@ -35,7 +34,6 @@ async def notificar_telegram_admin(texto: str, caminho_file: str = None):
         except Exception as e:
             logger.warning(f"⚠️ Não foi possível enviar notificação ao Admin ({Config.ADMIN_ID}): {e}")
 
-# --- WORKER AUTOMÁTICO DA FILA DE ESPERA ---
 async def worker_fila_processamento():
     global FILA_PAUSADA
     logger.info("⚙️ Worker de Fila de Espera iniciado e monitorando novas solicitações...")
@@ -86,7 +84,6 @@ async def worker_fila_processamento():
             logger.error(f"⚠️ Erro no worker da fila: {e}")
             await asyncio.sleep(5)
 
-# --- STREAMING DE VÍDEO ---
 async def handle_stream(request):
     media_id = request.match_info.get("media_id")
     midia = obter_midia(media_id)
@@ -180,7 +177,6 @@ async def handle_stream(request):
         logger.error(f"❌ Erro ao servir stream {media_id}: {e}")
         return web.Response(status=500, text=f"Erro interno no servidor de streaming: {e}")
 
-# --- ENDPOINTS DA API WEB ---
 async def api_search(request):
     q = request.query.get('q', '').strip()
     tipo = request.query.get('tipo', 'movie')
@@ -263,9 +259,9 @@ async def api_sources(request):
             return web.json_response({"error": "IMDB ID não encontrado no TMDB."}, status=404)
 
         if tipo == 'movie':
-            opcoes = buscar_fontes_indexadores("movie", imdb_id)
+            opcoes = await buscar_fontes_indexadores("movie", imdb_id)
         else:
-            opcoes = buscar_fontes_indexadores("series", imdb_id, int(season), int(episode))
+            opcoes = await buscar_fontes_indexadores("series", imdb_id, int(season), int(episode))
 
         return web.json_response({"tmdb_info": res_tmdb, "opcoes": opcoes})
     except Exception as e:
@@ -396,14 +392,14 @@ async def api_series_continue(request):
 
     return web.json_response({"status": "success", "results": resultado})
 
-# --- PÁGINA WEB ---
 async def handle_web_app(request):
     html = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JellyBot Web — Fila de Automacao</title>
+    <title>JellyBot — Cinema & Automação</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍿</text></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -427,7 +423,6 @@ async def handle_web_app(request):
     </nav>
 
     <div class="max-w-6xl mx-auto px-4">
-        <!-- SEÇÃO 1: PESQUISA E DASHBOARD INICIAL -->
         <div id="sec-search" class="space-y-8">
             <div class="glass p-6 rounded-2xl shadow-xl">
                 <div class="flex flex-col md:flex-row gap-4">
@@ -440,20 +435,17 @@ async def handle_web_app(request):
                 </div>
             </div>
 
-            <!-- DASHBOARD DE INÍCIO (SÉRIES EM ANDAMENTO + LANÇAMENTOS) -->
             <div id="home-dashboard" class="space-y-8">
-                <!-- SÉRIES EM ANDAMENTO -->
                 <div id="container-continue-series" class="hidden space-y-4">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xl font-extrabold text-emerald-400 flex items-center gap-2">
                             <i class="fa-solid fa-play-circle"></i> Séries em Andamento / Continuar
                         </h3>
-                        <span class="text-xs text-slate-400 font-semibold">Baseado no seu acervo local</span>
+                        <span class="text-xs text-slate-400 font-semibold">Baseado no acervo local</span>
                     </div>
                     <div id="home-continue-grid" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
                 </div>
 
-                <!-- FILMES EM CARTAZ -->
                 <div class="space-y-4">
                     <h3 class="text-xl font-extrabold text-sky-400 flex items-center gap-2">
                         <i class="fa-solid fa-fire text-amber-400"></i> Filmes em Cartaz / Lançamentos
@@ -461,7 +453,6 @@ async def handle_web_app(request):
                     <div id="home-movies-grid" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
                 </div>
 
-                <!-- SÉRIES EM EXIBIÇÃO -->
                 <div class="space-y-4">
                     <h3 class="text-xl font-extrabold text-indigo-400 flex items-center gap-2">
                         <i class="fa-solid fa-tv"></i> Séries Populares em Exibição
@@ -470,11 +461,9 @@ async def handle_web_app(request):
                 </div>
             </div>
 
-            <!-- RESULTADOS DA PESQUISA (OCULTO INICIALMENTE) -->
             <div id="results-tmdb" class="hidden grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
         </div>
 
-        <!-- SEÇÃO DEDICADA DE DETALHES -->
         <div id="sec-detail" class="hidden space-y-6">
             <button onclick="voltarParaPesquisa()" class="bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold px-4 py-2 rounded-xl border border-slate-700 text-xs flex items-center gap-2">
                 <i class="fa-solid fa-arrow-left"></i> Voltar
@@ -493,7 +482,6 @@ async def handle_web_app(request):
             </div>
         </div>
 
-        <!-- SEÇÃO 2: FILA COM CONTROLE DE PAUSA -->
         <div id="sec-queue" class="hidden space-y-4">
             <div class="glass p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-center gap-4">
                 <div class="flex items-center gap-3">
@@ -506,14 +494,12 @@ async def handle_web_app(request):
             <div id="queue-list" class="space-y-4"></div>
         </div>
 
-        <!-- SEÇÃO 3: BIBLIOTECA -->
         <div id="sec-library" class="hidden space-y-4">
             <h2 class="text-xl font-extrabold text-slate-100 mb-2 flex items-center gap-2"><i class="fa-solid fa-film text-emerald-400"></i> Midias Ativas no Jellyfin</h2>
             <div id="library-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
         </div>
     </div>
 
-    <!-- MODAL DE SELEÇÃO DE FONTES DE EPISÓDIO -->
     <div id="ep-sources-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
         <div class="glass p-6 rounded-3xl max-w-2xl w-full border border-sky-500/30 space-y-4 max-h-[90vh] overflow-y-auto">
             <div class="flex justify-between items-center border-b border-slate-700/60 pb-3">
@@ -566,7 +552,6 @@ async def handle_web_app(request):
         }
 
         async function carregarDashboardHome() {
-            // Carregar Séries em Andamento
             try {
                 const resCont = await fetch('/api/series/continue').then(r => r.json());
                 if (resCont.results && resCont.results.length > 0) {
@@ -593,7 +578,6 @@ async def handle_web_app(request):
                 console.error("Erro ao carregar séries em andamento:", e);
             }
 
-            // Carregar Lançamentos de Filmes
             try {
                 const resM = await fetch('/api/catalog/movies').then(r => r.json());
                 if (resM.results) {
@@ -613,7 +597,6 @@ async def handle_web_app(request):
                 }
             } catch(e) {}
 
-            // Carregar Séries Populares
             try {
                 const resS = await fetch('/api/catalog/series').then(r => r.json());
                 if (resS.results) {
@@ -978,7 +961,6 @@ async def iniciar_servidor():
     app.router.add_post("/api/queue/retry", api_retry_queue)
     app.router.add_post("/api/queue/delete", api_delete_queue)
     
-    # Rotas do Catálogo e Acompanhamento
     app.router.add_get("/api/catalog/movies", api_catalog_movies)
     app.router.add_get("/api/catalog/series", api_catalog_series)
     app.router.add_get("/api/series/continue", api_series_continue)

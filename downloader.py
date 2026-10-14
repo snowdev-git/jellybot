@@ -3,7 +3,7 @@ import re
 import time
 import math
 import asyncio
-import requests
+import aiohttp
 from telethon import helpers
 from telethon.tl.functions.upload import SaveBigFilePartRequest
 from telethon.tl.types import InputFileBig
@@ -63,7 +63,7 @@ def extrair_info_stream(s: dict) -> str:
 def limpar_nome(nome: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
-def resolver_url_direta(url_original: str) -> str:
+async def resolver_url_direta_async(url_original: str) -> str:
     if "urltech.gy" in url_original:
         match = re.search(r'/(\d+\.mp4)', url_original)
         if match:
@@ -76,11 +76,10 @@ def resolver_url_direta(url_original: str) -> str:
         return url_original
 
     try:
-        session = requests.Session()
-        session.headers.update(HEADERS_BROWSER)
-        with session.get(url_original, allow_redirects=True, stream=True, timeout=15) as r:
-            if r.status_code == 200:
-                return r.url
+        async with aiohttp.ClientSession(headers=HEADERS_BROWSER) as session:
+            async with session.get(url_original, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status == 200:
+                    return str(r.url)
     except Exception as e:
         logger.warning(f"⚠️ Resolução de URL padrão mantida: {e}")
 
@@ -95,11 +94,9 @@ def ordenar_fontes(resultados: list) -> list:
         url = str(fonte.get("url", "") or "").lower()
         texto = f"{idx} {qualidade} {url}"
 
-        # Prioridade principal ao FrostStream
         if "froststream" in texto or "frost" in idx:
             score += 100
 
-        # Sub-prioridade por servidor
         if "azure" in texto:
             score += 50
         elif "neon" in texto:
@@ -109,7 +106,6 @@ def ordenar_fontes(resultados: list) -> list:
         elif "astra" in texto:
             score += 10
 
-        # Resolução
         if "1080p" in qualidade or "fhd" in qualidade:
             score += 5
         elif "720p" in qualidade:
@@ -119,46 +115,49 @@ def ordenar_fontes(resultados: list) -> list:
 
     return sorted(resultados, key=calcular_peso, reverse=True)
 
-def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episode: int = None):
+async def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episode: int = None):
     indexadores = carregar_indexadores()
     resultados = []
 
-    for idx in indexadores:
-        url = (
-            f"{idx['url']}/stream/movie/{imdb_id}.json"
-            if tipo == "movie"
-            else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
-        )
-        try:
-            res = requests.get(url, headers=HEADERS_BROWSER, timeout=15)
-            if res.status_code == 200:
-                streams = res.json().get("streams", [])
-                for s in streams:
-                    if "url" in s and s["url"].startswith("http"):
-                        url_limpa = resolver_url_direta(s["url"])
-                        qualidade_info = extrair_info_stream(s)
-                        resultados.append({
-                            "indexador": idx["nome"],
-                            "qualidade": qualidade_info,
-                            "url": url_limpa
-                        })
-        except Exception as e:
-            logger.warning(f"⚠️ Indexador '{idx['nome']}' indisponível: {e}")
+    async with aiohttp.ClientSession(headers=HEADERS_BROWSER) as session:
+        for idx in indexadores:
+            url = (
+                f"{idx['url']}/stream/movie/{imdb_id}.json"
+                if tipo == "movie"
+                else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
+            )
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as res:
+                    if res.status == 200:
+                        data = await res.json()
+                        streams = data.get("streams", [])
+                        for s in streams:
+                            if "url" in s and s["url"].startswith("http"):
+                                url_limpa = await resolver_url_direta_async(s["url"])
+                                qualidade_info = extrair_info_stream(s)
+                                resultados.append({
+                                    "indexador": idx["nome"],
+                                    "qualidade": qualidade_info,
+                                    "url": url_limpa
+                                })
+            except Exception as e:
+                logger.warning(f"⚠️ Indexador '{idx['nome']}' indisponível: {e}")
 
     return ordenar_fontes(resultados)
 
-def atualizar_jellyfin():
+async def atualizar_jellyfin_async():
     if not Config.JELLYFIN_API_KEY:
         return False
     try:
         url = f"{Config.JELLYFIN_URL}/Library/Refresh?api_key={Config.JELLYFIN_API_KEY}"
-        res = requests.post(url, timeout=5)
-        return res.status_code in [200, 204]
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, timeout=aiohttp.ClientTimeout(total=5)) as res:
+                return res.status in [200, 204]
     except Exception as e:
         logger.error(f"❌ Erro ao atualizar biblioteca do Jellyfin: {e}")
         return False
 
-def dividir_arquivo_binario(caminho_arquivo: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
+async def dividir_arquivo_binario_async(caminho_arquivo: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
     tamanho_total = os.path.getsize(caminho_arquivo)
     if tamanho_total <= tamanho_max_bytes:
         return [caminho_arquivo]
@@ -180,6 +179,7 @@ def dividir_arquivo_binario(caminho_arquivo: str, tamanho_max_bytes: int = LIMIT
             partes_criadas.append(caminho_parte)
             logger.info(f"🧩 Bloco binário {parte_idx} criado ({len(chunk_data) / (1024**2):.1f} MB)")
             parte_idx += 1
+            await asyncio.sleep(0)
 
     return partes_criadas
 
@@ -222,6 +222,7 @@ async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None,
                             progress_callback(bytes_enviados, tamanho_total)
 
                     fila_partes.task_done()
+                    await asyncio.sleep(0)
 
         workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
         await asyncio.gather(*workers)
@@ -252,68 +253,71 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
     partes_divididas = []
 
     try:
-        url_final = resolver_url_direta(url_fonte)
+        url_final = await resolver_url_direta_async(url_fonte)
 
-        logger.info(f"⏳ A iniciar download temporário: {nome_base}")
+        logger.info(f"⏳ A iniciar download temporário assíncrono: {nome_base}")
         if progress_callback: progress_callback("⏳ **A verificar disponibilidade da mídia...**")
 
         try:
-            with requests.get(url_final, headers=HEADERS_BROWSER, stream=True, timeout=30, allow_redirects=True) as r:
-                r.raise_for_status()
-                content_type = r.headers.get('Content-Type', '').lower()
+            timeout_cfg = aiohttp.ClientTimeout(total=None, connect=30, sock_read=30)
+            async with aiohttp.ClientSession(headers=HEADERS_BROWSER, timeout=timeout_cfg) as session:
+                async with session.get(url_final, allow_redirects=True) as r:
+                    if r.status != 200:
+                        raise ValueError(f"O servidor da fonte retornou HTTP {r.status}.")
 
-                if 'html' in content_type or 'text' in content_type:
-                    raise ValueError("A URL retornou uma página Web em vez de um arquivo de vídeo.")
+                    content_type = r.headers.get('Content-Type', '').lower()
+                    if 'html' in content_type or 'text' in content_type:
+                        raise ValueError("A URL retornou uma página Web em vez de um arquivo de vídeo.")
 
-                total_length = r.headers.get('content-length')
-                total_bytes = int(total_length) if total_length and total_length.isdigit() else 0
+                    total_length = r.headers.get('Content-Length')
+                    total_bytes = int(total_length) if total_length and total_length.isdigit() else 0
 
-                downloaded_bytes = 0
-                dl_start_time = time.time()
-                last_dl_log_time = dl_start_time
-                last_dl_tg_time = dl_start_time
+                    downloaded_bytes = 0
+                    dl_start_time = time.time()
+                    last_dl_log_time = dl_start_time
+                    last_dl_tg_time = dl_start_time
 
-                with open(caminho_temp, 'wb') as f:
-                    header_bytes = b""
-                    for chunk in r.iter_content(chunk_size=2 * 1024 * 1024):
-                        if chunk:
-                            if len(header_bytes) < 64:
-                                header_bytes += chunk[:64]
-                                is_valid_video = any(magic in header_bytes for magic in VIDEO_MAGIC_BYTES)
-                                if not is_valid_video and len(header_bytes) >= 32:
-                                    raise ValueError("O arquivo do servidor de origem não é um vídeo válido.")
+                    with open(caminho_temp, 'wb') as f:
+                        header_bytes = b""
+                        async for chunk in r.content.iter_chunked(2 * 1024 * 1024):
+                            if chunk:
+                                if len(header_bytes) < 64:
+                                    header_bytes += chunk[:64]
+                                    is_valid_video = any(magic in header_bytes for magic in VIDEO_MAGIC_BYTES)
+                                    if not is_valid_video and len(header_bytes) >= 32:
+                                        raise ValueError("O arquivo do servidor de origem não é um vídeo válido.")
 
-                            downloaded_bytes += len(chunk)
-                            f.write(chunk)
+                                downloaded_bytes += len(chunk)
+                                f.write(chunk)
 
-                            now = time.time()
-                            if now - last_dl_log_time >= 2.0 or (total_bytes > 0 and downloaded_bytes == total_bytes):
-                                elapsed = now - dl_start_time
-                                speed = (downloaded_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                                dl_mb = downloaded_bytes / (1024 * 1024)
+                                await asyncio.sleep(0)
 
-                                if total_bytes > 0:
-                                    total_mb = total_bytes / (1024 * 1024)
-                                    pct = (downloaded_bytes / total_bytes) * 100
-                                    logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
+                                now = time.time()
+                                if now - last_dl_log_time >= 2.0 or (total_bytes > 0 and downloaded_bytes == total_bytes):
+                                    elapsed = now - dl_start_time
+                                    speed = (downloaded_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                                    dl_mb = downloaded_bytes / (1024 * 1024)
 
-                                    if progress_callback and (now - last_dl_tg_time >= 5.0):
-                                        progress_callback(f"⏳ **A transferir mídia para o servidor...**\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
-                                        last_dl_tg_time = now
-                                else:
-                                    logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f} MB baixados - {speed:.2f} MB/s")
+                                    if total_bytes > 0:
+                                        total_mb = total_bytes / (1024 * 1024)
+                                        pct = (downloaded_bytes / total_bytes) * 100
+                                        logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
 
-                                last_dl_log_time = now
+                                        if progress_callback and (now - last_dl_tg_time >= 5.0):
+                                            progress_callback(f"⏳ **A transferir mídia para o servidor...**\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                                            last_dl_tg_time = now
+                                    else:
+                                        logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f} MB baixados - {speed:.2f} MB/s")
 
-        except requests.exceptions.HTTPError as errh:
-            raise ValueError(f"O servidor da fonte retornou erro de conexão HTTP ({errh.response.status_code}). Tente outra opção ou cole um link direto.")
-        except requests.exceptions.RequestException as err:
-            raise ValueError(f"Falha de conexão com a fonte: {err}")
+                                    last_dl_log_time = now
+
+        except Exception as err:
+            raise ValueError(f"Falha na conexão de download assíncrono: {err}")
 
         if not os.path.exists(caminho_temp) or os.path.getsize(caminho_temp) < 3000000:
             raise ValueError("O ficheiro baixado é demasiado pequeno ou ficou incompleto.")
 
-        partes_divididas = dividir_arquivo_binario(caminho_temp, LIMITE_PARTE_BYTES)
+        partes_divididas = await dividir_arquivo_binario_async(caminho_temp, LIMITE_PARTE_BYTES)
 
         logger.info(f"🚀 A iniciar upload acelerado ({len(partes_divididas)} bloco(s)) para o Telegram: {nome_base}")
         if progress_callback: progress_callback(f"🚀 **A guardar no Telegram Storage ({len(partes_divididas)} bloco(s))...**")
@@ -389,7 +393,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
             status='COMPLETED'
         )
 
-        atualizar_jellyfin()
+        await atualizar_jellyfin_async()
         logger.info(f"🎉 Mídia {nome_base} hospedada ({len(msg_ids_salvos)} bloco(s)) e indexada com sucesso!")
         return True, nome_base, caminho_strm
 
