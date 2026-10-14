@@ -517,10 +517,60 @@ async def handle_web_app(request):
         </div>
     </div>
 
+    <!-- Contêiner de Notificações Toast Flutuantes -->
+    <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
     <script>
         let currentDetailMedia = null;
         let currentSelectedEp = null;
         let isQueuePaused = false;
+        let lastQueueState = {};
+
+        function showToast(mensagem, tipo = 'info') {
+            const container = document.getElementById('toast-container');
+            if(!container) return;
+
+            const toast = document.createElement('div');
+            let icon = 'fa-circle-info text-sky-400';
+            let border = 'border-sky-500/40';
+
+            if (tipo === 'success') { icon = 'fa-circle-check text-emerald-400'; border = 'border-emerald-500/40'; }
+            if (tipo === 'warning') { icon = 'fa-bell text-amber-400'; border = 'border-amber-500/40'; }
+            if (tipo === 'error') { icon = 'fa-triangle-exclamation text-rose-400'; border = 'border-rose-500/40'; }
+
+            toast.className = `pointer-events-auto glass px-4 py-3 rounded-2xl shadow-2xl border ${border} flex items-center gap-3 text-sm text-white font-bold transform translate-y-4 opacity-0 transition-all duration-300 max-w-md`;
+            toast.innerHTML = `<i class="fa-solid ${icon} text-lg"></i> <span>${mensagem}</span>`;
+
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-y-4', 'opacity-0');
+            });
+
+            setTimeout(() => {
+                toast.classList.add('translate-y-4', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        async function monitorarNotificacoesFila() {
+            try {
+                const data = await fetch('/api/queue').then(r => r.json());
+                (data.fila || []).forEach(item => {
+                    const prevStatus = lastQueueState[item.id];
+                    if (prevStatus && prevStatus !== item.status) {
+                        if (item.status === 'PROCESSING') {
+                            showToast(`🚀 Download iniciado: ${item.titulo}`, 'warning');
+                        } else if (item.status === 'COMPLETED') {
+                            showToast(`🎉 Concluído e ativo no Jellyfin: ${item.titulo}`, 'success');
+                        } else if (item.status === 'FAILED') {
+                            showToast(`❌ Falha no download: ${item.titulo}`, 'error');
+                        }
+                    }
+                    lastQueueState[item.id] = item.status;
+                });
+            } catch (e) {}
+        }
 
         function tab(t) {
             ['search', 'detail', 'queue', 'library'].forEach(s => {
@@ -792,14 +842,13 @@ async def handle_web_app(request):
                 })
             }).then(r => r.json());
 
-            alert(res.message || 'Adicionado à fila!');
+            showToast(res.message || 'Episódio adicionado à fila!', 'success');
             fecharModalEp();
-            tab('queue');
         }
 
         async function adicionarManualEp() {
             const url = document.getElementById('ep-manual-url').value.trim();
-            if(!url) return alert('Digite uma URL válida!');
+            if(!url) return showToast('Digite uma URL válida!', 'warning');
             adicionarEpAFila(url, 'LINK MANUAL 🔗');
         }
 
@@ -835,8 +884,7 @@ async def handle_web_app(request):
                 })
             }).then(r => r.json());
 
-            alert(res.message || 'Adicionado à fila!');
-            tab('queue');
+            showToast(res.message || 'Filme adicionado à fila!', 'success');
         }
 
         async function alternarPausaFila() {
@@ -928,7 +976,10 @@ async def handle_web_app(request):
 
         document.addEventListener('DOMContentLoaded', () => {
             carregarDashboardHome();
+            monitorarNotificacoesFila();
         });
+
+        setInterval(monitorarNotificacoesFila, 3000);
 
         setInterval(() => {
             if(!document.getElementById('sec-queue').classList.contains('hidden')) {
