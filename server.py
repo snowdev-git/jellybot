@@ -330,7 +330,6 @@ async def api_delete_queue(request):
     return web.json_response({"success": True})
 
 async def api_catalog_movies(request):
-    """Retorna os lançamentos de filmes mais recentes do TMDB."""
     api_key = Config.TMDB_API_KEY
     url = f"https://api.themoviedb.org/3/movie/now_playing?api_key={api_key}&language=pt-BR&page=1"
     try:
@@ -344,7 +343,6 @@ async def api_catalog_movies(request):
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 async def api_catalog_series(request):
-    """Retorna as séries populares em exibição do TMDB."""
     api_key = Config.TMDB_API_KEY
     url = f"https://api.themoviedb.org/3/tv/on_the_air?api_key={api_key}&language=pt-BR&page=1"
     try:
@@ -356,6 +354,47 @@ async def api_catalog_series(request):
                 return web.json_response({"status": "error", "results": []}, status=resp.status)
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+async def api_series_continue(request):
+    salvos = listar_midias("series")
+    series_map = {}
+    
+    for item in salvos:
+        mid = item.get("media_id", "")
+        match = re.match(r"tv_(\d+)_s(\d+)e(\d+)", mid)
+        if match:
+            tmdb_id, s_num, ep_num = match.groups()
+            s_num, ep_num = int(s_num), int(ep_num)
+            if tmdb_id not in series_map:
+                series_map[tmdb_id] = {
+                    "tmdb_id": tmdb_id,
+                    "titulo": item.get("titulo", "").split(" S")[0],
+                    "ultimo_s": s_num,
+                    "ultimo_ep": ep_num
+                }
+            else:
+                curr = series_map[tmdb_id]
+                if (s_num > curr["ultimo_s"]) or (s_num == curr["ultimo_s"] and ep_num > curr["ultimo_ep"]):
+                    curr["ultimo_s"] = s_num
+                    curr["ultimo_ep"] = ep_num
+
+    resultado = []
+    api_key = Config.TMDB_API_KEY
+    async with aiohttp.ClientSession() as session:
+        for tmdb_id, info in series_map.items():
+            try:
+                url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}&language=pt-BR"
+                async with session.get(url, timeout=5) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        info["poster_path"] = data.get("poster_path")
+                        info["nome"] = data.get("name", info["titulo"])
+                        info["vote_average"] = data.get("vote_average", 0)
+                        resultado.append(info)
+            except Exception as e:
+                resultado.append(info)
+
+    return web.json_response({"status": "success", "results": resultado})
 
 # --- PÁGINA WEB ---
 async def handle_web_app(request):
@@ -381,40 +420,58 @@ async def handle_web_app(request):
             <span class="text-xl font-black bg-gradient-to-r from-sky-400 via-blue-500 to-indigo-500 bg-clip-text text-transparent">JellyBot Web</span>
         </div>
         <div class="flex space-x-2">
-            <button onclick="tab('search')" id="tab-search" class="px-4 py-2 rounded-xl font-bold transition bg-blue-600 text-white shadow-lg shadow-blue-500/20"><i class="fa-solid fa-magnifying-glass mr-2"></i>Pesquisar</button>
-            <button onclick="tab('catalog')" id="tab-catalog" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-fire mr-2"></i>Lançamentos</button>
+            <button onclick="tab('search')" id="tab-search" class="px-4 py-2 rounded-xl font-bold transition bg-blue-600 text-white shadow-lg shadow-blue-500/20"><i class="fa-solid fa-house mr-2"></i>Início & Pesquisa</button>
             <button onclick="tab('queue')" id="tab-queue" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-list-check mr-2"></i>Fila & Status</button>
             <button onclick="tab('library')" id="tab-library" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-film mr-2"></i>Biblioteca</button>
         </div>
     </nav>
 
     <div class="max-w-6xl mx-auto px-4">
-        <!-- SEÇÃO 1: PESQUISA -->
-        <div id="sec-search" class="space-y-6">
+        <!-- SEÇÃO 1: PESQUISA E DASHBOARD INICIAL -->
+        <div id="sec-search" class="space-y-8">
             <div class="glass p-6 rounded-2xl shadow-xl">
                 <div class="flex flex-col md:flex-row gap-4">
                     <select id="search-type" class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 font-bold text-sky-400 focus:outline-none focus:border-sky-500">
                         <option value="movie">🎬 Filme</option>
                         <option value="tv">📺 Série</option>
                     </select>
-                    <input type="text" id="search-input" placeholder="Digite o nome do filme ou série..." class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-5 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500" onkeypress="if(event.key==='Enter') pesquisarTMDB()">
+                    <input type="text" id="search-input" placeholder="Digite o nome do filme ou série..." class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-5 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500" oninput="checarLimpezaBusca()" onkeypress="if(event.key==='Enter') pesquisarTMDB()">
                     <button onclick="pesquisarTMDB()" class="bg-blue-600 hover:bg-blue-500 font-extrabold px-8 py-3 rounded-xl transition shadow-lg shadow-blue-600/30 flex items-center justify-center"><i class="fa-solid fa-search mr-2"></i>Buscar</button>
                 </div>
             </div>
 
-            <div id="results-tmdb" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
-        </div>
+            <!-- DASHBOARD DE INÍCIO (SÉRIES EM ANDAMENTO + LANÇAMENTOS) -->
+            <div id="home-dashboard" class="space-y-8">
+                <!-- SÉRIES EM ANDAMENTO -->
+                <div id="container-continue-series" class="hidden space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-xl font-extrabold text-emerald-400 flex items-center gap-2">
+                            <i class="fa-solid fa-play-circle"></i> Séries em Andamento / Continuar
+                        </h3>
+                        <span class="text-xs text-slate-400 font-semibold">Baseado no seu acervo local</span>
+                    </div>
+                    <div id="home-continue-grid" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+                </div>
 
-        <!-- SEÇÃO 1.5: CATÁLOGO DE LANÇAMENTOS -->
-        <div id="sec-catalog" class="hidden space-y-8">
-            <div class="space-y-4">
-                <h3 class="text-xl font-extrabold text-sky-400 flex items-center gap-2"><i class="fa-solid fa-film"></i> Filmes em Cartaz / Lançamentos</h3>
-                <div id="catalog-movies" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+                <!-- FILMES EM CARTAZ -->
+                <div class="space-y-4">
+                    <h3 class="text-xl font-extrabold text-sky-400 flex items-center gap-2">
+                        <i class="fa-solid fa-fire text-amber-400"></i> Filmes em Cartaz / Lançamentos
+                    </h3>
+                    <div id="home-movies-grid" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+                </div>
+
+                <!-- SÉRIES EM EXIBIÇÃO -->
+                <div class="space-y-4">
+                    <h3 class="text-xl font-extrabold text-indigo-400 flex items-center gap-2">
+                        <i class="fa-solid fa-tv"></i> Séries Populares em Exibição
+                    </h3>
+                    <div id="home-series-grid" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+                </div>
             </div>
-            <div class="space-y-4">
-                <h3 class="text-xl font-extrabold text-indigo-400 flex items-center gap-2"><i class="fa-solid fa-tv"></i> Séries Populares em Exibição</h3>
-                <div id="catalog-series" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
-            </div>
+
+            <!-- RESULTADOS DA PESQUISA (OCULTO INICIALMENTE) -->
+            <div id="results-tmdb" class="hidden grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
         </div>
 
         <!-- SEÇÃO DEDICADA DE DETALHES -->
@@ -480,7 +537,7 @@ async def handle_web_app(request):
         let isQueuePaused = false;
 
         function tab(t) {
-            ['search', 'catalog', 'detail', 'queue', 'library'].forEach(s => {
+            ['search', 'detail', 'queue', 'library'].forEach(s => {
                 const el = document.getElementById('sec-' + s);
                 if(el) el.classList.add('hidden');
                 const btn = document.getElementById('tab-' + s);
@@ -490,55 +547,91 @@ async def handle_web_app(request):
             const activeBtn = document.getElementById('tab-' + t);
             if(activeBtn) activeBtn.className = 'px-4 py-2 rounded-xl font-bold transition bg-blue-600 text-white shadow-lg shadow-blue-500/20';
 
-            if (t === 'catalog') carregarCatalogos();
+            if (t === 'search') carregarDashboardHome();
             if (t === 'queue' || t === 'library') atualizarFilaEBiblioteca();
         }
 
         function voltarParaPesquisa() {
             tab('search');
+            document.getElementById('search-input').value = '';
+            checarLimpezaBusca();
         }
 
-        async function carregarCatalogos() {
-            document.getElementById('catalog-movies').innerHTML = '<div class="col-span-4 text-center py-6 text-sky-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Carregando filmes em cartaz...</div>';
-            document.getElementById('catalog-series').innerHTML = '<div class="col-span-4 text-center py-6 text-indigo-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Carregando séries em exibição...</div>';
+        function checarLimpezaBusca() {
+            const q = document.getElementById('search-input').value.trim();
+            if (!q) {
+                document.getElementById('results-tmdb').classList.add('hidden');
+                document.getElementById('home-dashboard').classList.remove('hidden');
+            }
+        }
 
+        async function carregarDashboardHome() {
+            // Carregar Séries em Andamento
+            try {
+                const resCont = await fetch('/api/series/continue').then(r => r.json());
+                if (resCont.results && resCont.results.length > 0) {
+                    let hC = '';
+                    resCont.results.forEach(item => {
+                        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450';
+                        const ultEpText = `S${String(item.ultimo_s).padStart(2,'0')}E${String(item.ultimo_ep).padStart(2,'0')}`;
+                        hC += `
+                        <div onclick="abrirDetalhes('${item.tmdb_id}', 'tv')" class="glass-card rounded-2xl overflow-hidden cursor-pointer group relative border border-emerald-500/30">
+                            <span class="absolute top-2 right-2 bg-emerald-500 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-full shadow-lg">Parou no ${ultEpText}</span>
+                            <img src="${poster}" class="w-full h-64 object-cover group-hover:scale-105 transition duration-300">
+                            <div class="p-3 bg-slate-950/80">
+                                <h4 class="font-bold text-xs text-white line-clamp-1">${item.nome}</h4>
+                                <button class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[11px] py-1.5 rounded-lg mt-2 transition flex items-center justify-center gap-1">
+                                    <i class="fa-solid fa-play text-[9px]"></i> Baixar Próximo
+                                </button>
+                            </div>
+                        </div>`;
+                    });
+                    document.getElementById('home-continue-grid').innerHTML = hC;
+                    document.getElementById('container-continue-series').classList.remove('hidden');
+                }
+            } catch (e) {
+                console.error("Erro ao carregar séries em andamento:", e);
+            }
+
+            // Carregar Lançamentos de Filmes
             try {
                 const resM = await fetch('/api/catalog/movies').then(r => r.json());
-                if(resM.results) {
+                if (resM.results) {
                     let hM = '';
                     resM.results.slice(0, 8).forEach(item => {
                         const poster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450';
                         hM += `
                         <div onclick="abrirDetalhes('${item.id}', 'movie')" class="glass-card rounded-2xl overflow-hidden cursor-pointer group">
-                            <img src="${poster}" class="w-full h-64 object-cover group-hover:scale-105 transition">
+                            <img src="${poster}" class="w-full h-64 object-cover group-hover:scale-105 transition duration-300">
                             <div class="p-3 bg-slate-950/80">
                                 <h4 class="font-bold text-xs text-white line-clamp-1">${item.title}</h4>
                                 <p class="text-[10px] text-slate-400 mt-0.5">⭐ ${item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}</p>
                             </div>
                         </div>`;
                     });
-                    document.getElementById('catalog-movies').innerHTML = hM;
+                    document.getElementById('home-movies-grid').innerHTML = hM;
                 }
+            } catch(e) {}
 
+            // Carregar Séries Populares
+            try {
                 const resS = await fetch('/api/catalog/series').then(r => r.json());
-                if(resS.results) {
+                if (resS.results) {
                     let hS = '';
                     resS.results.slice(0, 8).forEach(item => {
                         const poster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450';
                         hS += `
                         <div onclick="abrirDetalhes('${item.id}', 'tv')" class="glass-card rounded-2xl overflow-hidden cursor-pointer group">
-                            <img src="${poster}" class="w-full h-64 object-cover group-hover:scale-105 transition">
+                            <img src="${poster}" class="w-full h-64 object-cover group-hover:scale-105 transition duration-300">
                             <div class="p-3 bg-slate-950/80">
                                 <h4 class="font-bold text-xs text-white line-clamp-1">${item.name}</h4>
                                 <p class="text-[10px] text-slate-400 mt-0.5">⭐ ${item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}</p>
                             </div>
                         </div>`;
                     });
-                    document.getElementById('catalog-series').innerHTML = hS;
+                    document.getElementById('home-series-grid').innerHTML = hS;
                 }
-            } catch(e) {
-                console.error("Erro ao carregar catálogos:", e);
-            }
+            } catch(e) {}
         }
 
         async function pesquisarTMDB() {
@@ -546,7 +639,11 @@ async def handle_web_app(request):
             const tipo = document.getElementById('search-type').value;
             if(!q) return;
 
-            document.getElementById('results-tmdb').innerHTML = '<div class="col-span-4 text-center py-12 text-sky-400 font-bold"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2 block"></i>Consultando TMDB...</div>';
+            document.getElementById('home-dashboard').classList.add('hidden');
+            const elRes = document.getElementById('results-tmdb');
+            elRes.classList.remove('hidden');
+            elRes.innerHTML = '<div class="col-span-4 text-center py-12 text-sky-400 font-bold"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2 block"></i>Consultando TMDB...</div>';
+
             const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&tipo=${tipo}`).then(r => r.json());
 
             let html = '';
@@ -575,7 +672,7 @@ async def handle_web_app(request):
                     </div>
                 </div>`;
             });
-            document.getElementById('results-tmdb').innerHTML = html || '<p class="col-span-4 text-center text-slate-400 py-8">Nenhum resultado encontrado.</p>';
+            elRes.innerHTML = html || '<p class="col-span-4 text-center text-slate-400 py-8">Nenhum resultado encontrado.</p>';
         }
 
         async function abrirDetalhes(tmdbId, tipo) {
@@ -846,6 +943,10 @@ async def handle_web_app(request):
             atualizarFilaEBiblioteca();
         }
 
+        document.addEventListener('DOMContentLoaded', () => {
+            carregarDashboardHome();
+        });
+
         setInterval(() => {
             if(!document.getElementById('sec-queue').classList.contains('hidden')) {
                 atualizarFilaEBiblioteca();
@@ -877,9 +978,10 @@ async def iniciar_servidor():
     app.router.add_post("/api/queue/retry", api_retry_queue)
     app.router.add_post("/api/queue/delete", api_delete_queue)
     
-    # Rotas do Catálogo do TMDB
+    # Rotas do Catálogo e Acompanhamento
     app.router.add_get("/api/catalog/movies", api_catalog_movies)
     app.router.add_get("/api/catalog/series", api_catalog_series)
+    app.router.add_get("/api/series/continue", api_series_continue)
 
     runner = web.AppRunner(app)
     await runner.setup()
