@@ -86,6 +86,39 @@ def resolver_url_direta(url_original: str) -> str:
 
     return url_original
 
+def ordenar_fontes(resultados: list) -> list:
+    """Prioriza FrostStream e o servidor Azure no topo dos resultados."""
+    def calcular_peso(fonte: dict) -> int:
+        score = 0
+        idx = str(fonte.get("indexador", "") or "").lower()
+        qualidade = str(fonte.get("qualidade", "") or "").lower()
+        url = str(fonte.get("url", "") or "").lower()
+        texto = f"{idx} {qualidade} {url}"
+
+        # Prioridade principal ao FrostStream
+        if "froststream" in texto or "frost" in idx:
+            score += 100
+
+        # Sub-prioridade por servidor
+        if "azure" in texto:
+            score += 50
+        elif "neon" in texto:
+            score += 35
+        elif "carbon" in texto:
+            score += 20
+        elif "astra" in texto:
+            score += 10
+
+        # Resolução
+        if "1080p" in qualidade or "fhd" in qualidade:
+            score += 5
+        elif "720p" in qualidade:
+            score += 2
+
+        return score
+
+    return sorted(resultados, key=calcular_peso, reverse=True)
+
 def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episode: int = None):
     indexadores = carregar_indexadores()
     resultados = []
@@ -112,7 +145,7 @@ def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episo
         except Exception as e:
             logger.warning(f"⚠️ Indexador '{idx['nome']}' indisponível: {e}")
 
-    return resultados
+    return ordenar_fontes(resultados)
 
 def atualizar_jellyfin():
     if not Config.JELLYFIN_API_KEY:
@@ -190,7 +223,6 @@ async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None,
 
                     fila_partes.task_done()
 
-        # Usando 4 workers para evitar estourar a tabela de conexões de rede
         workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
         await asyncio.gather(*workers)
 
@@ -266,7 +298,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                                     logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f}/{total_mb:.1f} MB ({pct:.1f}%) - {speed:.2f} MB/s")
 
                                     if progress_callback and (now - last_dl_tg_time >= 5.0):
-                                        progress_callback(f"⏳ **A transferir mídia para o servidor...**\\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                                        progress_callback(f"⏳ **A transferir mídia para o servidor...**\n📊 `{pct:.1f}%` ({dl_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
                                         last_dl_tg_time = now
                                 else:
                                     logger.info(f"[{nome_base}] ⬇️ Download: {dl_mb:.1f} MB baixados - {speed:.2f} MB/s")
@@ -322,7 +354,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
                     last_up_log_time[0] = now
 
                     if progress_callback and (now - last_up_tg_time[0] >= 5.0 or current == total):
-                        progress_callback(f"🚀 **A guardar no Telegram Storage{tag_parte}...**\\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
+                        progress_callback(f"🚀 **A guardar no Telegram Storage{tag_parte}...**\n📊 `{pct:.1f}%` ({up_mb:.1f}/{total_mb:.1f} MB) à `{speed:.1f} MB/s`")
                         last_up_tg_time[0] = now
 
             handle_arquivo = await upload_paralelo_telegram(

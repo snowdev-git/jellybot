@@ -3,6 +3,7 @@ import re
 import json
 import asyncio
 import requests
+import aiohttp
 from aiohttp import web
 from config import Config
 from logger import logger
@@ -47,7 +48,7 @@ async def worker_fila_processamento():
                     titulo = item['titulo']
                     logger.info(f"▶️ [FILA] A iniciar processamento do item: {titulo} ({item['qualidade']})")
                     
-                    msg_inicio = f"⏳ **[JellyBot Web] Processamento Iniciado:**\\n🎬 `{titulo}`\\n🎧 Qualidade: `{item['qualidade']}`"
+                    msg_inicio = f"⏳ **[JellyBot Web] Processamento Iniciado:**\n🎬 `{titulo}`\n🎧 Qualidade: `{item['qualidade']}`"
                     await notificar_telegram_admin(msg_inicio)
                     
                     atualizar_status_fila(item_id, 'PROCESSING', '⏳ A verificar fonte de vídeo...')
@@ -67,17 +68,17 @@ async def worker_fila_processamento():
                         atualizar_status_fila(item_id, 'COMPLETED', '✅ Processado com sucesso e ativo no Jellyfin!')
                         logger.info(f"🎉 [FILA] Item {titulo} concluído com sucesso!")
                         msg_sucesso = (
-                            f"🎉 **[JellyBot Web] Mídia Concluída com Sucesso!**\\n\\n"
-                            f"🎬 **Mídia:** `{titulo}`\\n"
-                            f"🎧 **Qualidade:** `{item['qualidade']}`\\n"
-                            f"📂 **Caminho .strm:** `{caminho_strm}`\\n\\n"
+                            f"🎉 **[JellyBot Web] Mídia Concluída com Sucesso!**\n\n"
+                            f"🎬 **Mídia:** `{titulo}`\n"
+                            f"🎧 **Qualidade:** `{item['qualidade']}`\n"
+                            f"📂 **Caminho .strm:** `{caminho_strm}`\n\n"
                             f"👉 _Disponível no Jellyfin!_"
                         )
                         await notificar_telegram_admin(msg_sucesso, caminho_file=caminho_strm)
                     else:
                         atualizar_status_fila(item_id, 'FAILED', '❌ Falha ao processar', erro_msg=str(msg_res))
                         logger.error(f"❌ [FILA] Falha no item {titulo}: {msg_res}")
-                        msg_erro = f"❌ **[JellyBot Web] Falha ao Processar:**\\n🎬 `{titulo}`\\n⚠️ Erro: `{msg_res}`"
+                        msg_erro = f"❌ **[JellyBot Web] Falha ao Processar:**\n🎬 `{titulo}`\n⚠️ Erro: `{msg_res}`"
                         await notificar_telegram_admin(msg_erro)
 
             await asyncio.sleep(3)
@@ -192,9 +193,9 @@ async def api_search(request):
         
         for item in res:
             if tipo == 'movie':
-                nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(item.get("title", "Filme"))).strip()
+                nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(item.get("title", "Filme"))).strip()
                 ano = str(item.get("release_date", "0000"))[:4]
-                nome_slug = re.sub(r'\\W+', '_', nome_limpo).lower()
+                nome_slug = re.sub(r'\W+', '_', nome_limpo).lower()
                 media_id = f"movie_{item.get('id')}_{nome_slug}_{ano}"
             else:
                 media_id = f"tv_show_{item.get('id')}"
@@ -215,9 +216,9 @@ async def api_details(request):
         mapa_status = obter_mapa_status_midias()
 
         if tipo == 'movie':
-            nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(res.get("title", "Filme"))).strip()
+            nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(res.get("title", "Filme"))).strip()
             ano = str(res.get("release_date", "0000"))[:4]
-            nome_slug = re.sub(r'\\W+', '_', nome_limpo).lower()
+            nome_slug = re.sub(r'\W+', '_', nome_limpo).lower()
             media_id = f"movie_{res.get('id')}_{nome_slug}_{ano}"
             res['status_local'] = mapa_status.get(media_id)
 
@@ -278,13 +279,13 @@ async def api_add_queue(request):
     url_fonte = data.get("url_fonte")
 
     if tipo == "movie":
-        nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(tmdb_info.get("title", "Filme"))).strip()
+        nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(tmdb_info.get("title", "Filme"))).strip()
         ano = str(tmdb_info.get("release_date", "0000"))[:4]
-        nome_slug = re.sub(r'\\W+', '_', nome_limpo).lower()
+        nome_slug = re.sub(r'\W+', '_', nome_limpo).lower()
         media_id = f"movie_{tmdb_info.get('id')}_{nome_slug}_{ano}"
         titulo = f"{nome_limpo} ({ano})"
     else:
-        nome_limpo = re.sub(r'[\\\\/*?:"<>|]', "", str(tmdb_info.get("name", "Serie"))).strip()
+        nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(tmdb_info.get("name", "Serie"))).strip()
         season_num = int(data.get("season", 1))
         ep_num = int(data.get("episode", 1))
         tmdb_info['season_number'] = season_num
@@ -295,7 +296,7 @@ async def api_add_queue(request):
 
     adicionar_a_fila(media_id, tipo, tmdb_info.get('id'), titulo, ano, qualidade, url_fonte, tmdb_info)
     
-    msg_add = f"📥 **[Web UI] Novo Item Adicionado à Fila:**\\n🎬 `{titulo}`\\n🎧 Qualidade: `{qualidade}`"
+    msg_add = f"📥 **[Web UI] Novo Item Adicionado à Fila:**\n🎬 `{titulo}`\n🎧 Qualidade: `{qualidade}`"
     await notificar_telegram_admin(msg_add)
 
     return web.json_response({"success": True, "message": f"{titulo} adicionado à fila!"})
@@ -328,6 +329,34 @@ async def api_delete_queue(request):
         remover_midia(media_id)
     return web.json_response({"success": True})
 
+async def api_catalog_movies(request):
+    """Retorna os lançamentos de filmes mais recentes do TMDB."""
+    api_key = Config.TMDB_API_KEY
+    url = f"https://api.themoviedb.org/3/movie/now_playing?api_key={api_key}&language=pt-BR&page=1"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return web.json_response({"status": "success", "results": data.get("results", [])})
+                return web.json_response({"status": "error", "results": []}, status=resp.status)
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+async def api_catalog_series(request):
+    """Retorna as séries populares em exibição do TMDB."""
+    api_key = Config.TMDB_API_KEY
+    url = f"https://api.themoviedb.org/3/tv/on_the_air?api_key={api_key}&language=pt-BR&page=1"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return web.json_response({"status": "success", "results": data.get("results", [])})
+                return web.json_response({"status": "error", "results": []}, status=resp.status)
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
 # --- PÁGINA WEB ---
 async def handle_web_app(request):
     html = """<!DOCTYPE html>
@@ -353,6 +382,7 @@ async def handle_web_app(request):
         </div>
         <div class="flex space-x-2">
             <button onclick="tab('search')" id="tab-search" class="px-4 py-2 rounded-xl font-bold transition bg-blue-600 text-white shadow-lg shadow-blue-500/20"><i class="fa-solid fa-magnifying-glass mr-2"></i>Pesquisar</button>
+            <button onclick="tab('catalog')" id="tab-catalog" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-fire mr-2"></i>Lançamentos</button>
             <button onclick="tab('queue')" id="tab-queue" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-list-check mr-2"></i>Fila & Status</button>
             <button onclick="tab('library')" id="tab-library" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-film mr-2"></i>Biblioteca</button>
         </div>
@@ -375,10 +405,22 @@ async def handle_web_app(request):
             <div id="results-tmdb" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
         </div>
 
-        <!-- SEÇÃO DEDICADA DE DETALHES (FILME OU SÉRIE) -->
+        <!-- SEÇÃO 1.5: CATÁLOGO DE LANÇAMENTOS -->
+        <div id="sec-catalog" class="hidden space-y-8">
+            <div class="space-y-4">
+                <h3 class="text-xl font-extrabold text-sky-400 flex items-center gap-2"><i class="fa-solid fa-film"></i> Filmes em Cartaz / Lançamentos</h3>
+                <div id="catalog-movies" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+            </div>
+            <div class="space-y-4">
+                <h3 class="text-xl font-extrabold text-indigo-400 flex items-center gap-2"><i class="fa-solid fa-tv"></i> Séries Populares em Exibição</h3>
+                <div id="catalog-series" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+            </div>
+        </div>
+
+        <!-- SEÇÃO DEDICADA DE DETALHES -->
         <div id="sec-detail" class="hidden space-y-6">
             <button onclick="voltarParaPesquisa()" class="bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold px-4 py-2 rounded-xl border border-slate-700 text-xs flex items-center gap-2">
-                <i class="fa-solid fa-arrow-left"></i> Voltar para Resultados
+                <i class="fa-solid fa-arrow-left"></i> Voltar
             </button>
 
             <div id="detail-header" class="glass p-6 rounded-3xl flex flex-col md:flex-row gap-6 items-start"></div>
@@ -402,7 +444,6 @@ async def handle_web_app(request):
                     <span id="queue-status-badge" class="text-xs px-3 py-1 rounded-full font-bold"></span>
                 </div>
                 <button id="btn-toggle-pause" onclick="alternarPausaFila()" class="px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg">
-                    <!-- Gerado via JS -->
                 </button>
             </div>
             <div id="queue-list" class="space-y-4"></div>
@@ -439,8 +480,9 @@ async def handle_web_app(request):
         let isQueuePaused = false;
 
         function tab(t) {
-            ['search', 'detail', 'queue', 'library'].forEach(s => {
-                document.getElementById('sec-' + s).classList.add('hidden');
+            ['search', 'catalog', 'detail', 'queue', 'library'].forEach(s => {
+                const el = document.getElementById('sec-' + s);
+                if(el) el.classList.add('hidden');
                 const btn = document.getElementById('tab-' + s);
                 if(btn) btn.className = 'px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300';
             });
@@ -448,11 +490,55 @@ async def handle_web_app(request):
             const activeBtn = document.getElementById('tab-' + t);
             if(activeBtn) activeBtn.className = 'px-4 py-2 rounded-xl font-bold transition bg-blue-600 text-white shadow-lg shadow-blue-500/20';
 
+            if (t === 'catalog') carregarCatalogos();
             if (t === 'queue' || t === 'library') atualizarFilaEBiblioteca();
         }
 
         function voltarParaPesquisa() {
             tab('search');
+        }
+
+        async function carregarCatalogos() {
+            document.getElementById('catalog-movies').innerHTML = '<div class="col-span-4 text-center py-6 text-sky-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Carregando filmes em cartaz...</div>';
+            document.getElementById('catalog-series').innerHTML = '<div class="col-span-4 text-center py-6 text-indigo-400"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Carregando séries em exibição...</div>';
+
+            try {
+                const resM = await fetch('/api/catalog/movies').then(r => r.json());
+                if(resM.results) {
+                    let hM = '';
+                    resM.results.slice(0, 8).forEach(item => {
+                        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450';
+                        hM += `
+                        <div onclick="abrirDetalhes('${item.id}', 'movie')" class="glass-card rounded-2xl overflow-hidden cursor-pointer group">
+                            <img src="${poster}" class="w-full h-64 object-cover group-hover:scale-105 transition">
+                            <div class="p-3 bg-slate-950/80">
+                                <h4 class="font-bold text-xs text-white line-clamp-1">${item.title}</h4>
+                                <p class="text-[10px] text-slate-400 mt-0.5">⭐ ${item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}</p>
+                            </div>
+                        </div>`;
+                    });
+                    document.getElementById('catalog-movies').innerHTML = hM;
+                }
+
+                const resS = await fetch('/api/catalog/series').then(r => r.json());
+                if(resS.results) {
+                    let hS = '';
+                    resS.results.slice(0, 8).forEach(item => {
+                        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : 'https://via.placeholder.com/300x450';
+                        hS += `
+                        <div onclick="abrirDetalhes('${item.id}', 'tv')" class="glass-card rounded-2xl overflow-hidden cursor-pointer group">
+                            <img src="${poster}" class="w-full h-64 object-cover group-hover:scale-105 transition">
+                            <div class="p-3 bg-slate-950/80">
+                                <h4 class="font-bold text-xs text-white line-clamp-1">${item.name}</h4>
+                                <p class="text-[10px] text-slate-400 mt-0.5">⭐ ${item.vote_average ? item.vote_average.toFixed(1) : 'N/A'}</p>
+                            </div>
+                        </div>`;
+                    });
+                    document.getElementById('catalog-series').innerHTML = hS;
+                }
+            } catch(e) {
+                console.error("Erro ao carregar catálogos:", e);
+            }
         }
 
         async function pesquisarTMDB() {
@@ -682,7 +768,6 @@ async def handle_web_app(request):
             const data = await fetch('/api/queue').then(r => r.json());
             isQueuePaused = data.fila_pausada;
 
-            // Atualizar status do botão de Pausa/Start
             const badge = document.getElementById('queue-status-badge');
             const btnPause = document.getElementById('btn-toggle-pause');
 
@@ -698,7 +783,6 @@ async def handle_web_app(request):
                 btnPause.innerHTML = '<i class="fa-solid fa-pause"></i> Pausar Fila';
             }
 
-            // Renderizar Fila
             let qHtml = '';
             (data.fila || []).forEach(item => {
                 let badgeItem = 'bg-slate-800 text-slate-300';
@@ -732,7 +816,6 @@ async def handle_web_app(request):
             });
             document.getElementById('queue-list').innerHTML = qHtml || '<p class="text-slate-400 text-sm py-4">A fila de espera está vazia.</p>';
 
-            // Renderizar Biblioteca
             let lHtml = '';
             (data.salvos || []).forEach(m => {
                 lHtml += `
@@ -767,7 +850,7 @@ async def handle_web_app(request):
             if(!document.getElementById('sec-queue').classList.contains('hidden')) {
                 atualizarFilaEBiblioteca();
             }
-        }, 3000);
+        }, 2000);
     </script>
 </body>
 </html>"""
@@ -793,6 +876,10 @@ async def iniciar_servidor():
     app.router.add_get("/api/queue", api_get_queue)
     app.router.add_post("/api/queue/retry", api_retry_queue)
     app.router.add_post("/api/queue/delete", api_delete_queue)
+    
+    # Rotas do Catálogo do TMDB
+    app.router.add_get("/api/catalog/movies", api_catalog_movies)
+    app.router.add_get("/api/catalog/series", api_catalog_series)
 
     runner = web.AppRunner(app)
     await runner.setup()
