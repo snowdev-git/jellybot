@@ -115,33 +115,50 @@ def ordenar_fontes(resultados: list) -> list:
 
     return sorted(resultados, key=calcular_peso, reverse=True)
 
+async def consultar_indexador_unico(session: aiohttp.ClientSession, idx: dict, tipo: str, imdb_id: str, season: int = None, episode: int = None) -> list:
+    url = (
+        f"{idx['url']}/stream/movie/{imdb_id}.json"
+        if tipo == "movie"
+        else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
+    )
+    resultados_idx = []
+    try:
+        # Timeout individual curto para não travar a busca global
+        timeout = aiohttp.ClientTimeout(total=3.5)
+        async with session.get(url, timeout=timeout) as res:
+            if res.status == 200:
+                data = await res.json()
+                streams = data.get("streams", [])
+                for s in streams:
+                    if "url" in s and s["url"].startswith("http"):
+                        qualidade_info = extrair_info_stream(s)
+                        resultados_idx.append({
+                            "indexador": idx["nome"],
+                            "qualidade": qualidade_info,
+                            "url": s["url"]  # Retorna a URL diretamente sem requisições extras
+                        })
+    except Exception as e:
+        logger.warning(f"⚠️ Indexador '{idx['nome']}' ignorado/timeout: {e}")
+    
+    return resultados_idx
+
+
 async def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episode: int = None):
     indexadores = carregar_indexadores()
-    resultados = []
+    if not indexadores:
+        return []
 
+    resultados = []
     async with aiohttp.ClientSession(headers=HEADERS_BROWSER) as session:
-        for idx in indexadores:
-            url = (
-                f"{idx['url']}/stream/movie/{imdb_id}.json"
-                if tipo == "movie"
-                else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
-            )
-            try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as res:
-                    if res.status == 200:
-                        data = await res.json()
-                        streams = data.get("streams", [])
-                        for s in streams:
-                            if "url" in s and s["url"].startswith("http"):
-                                url_limpa = await resolver_url_direta_async(s["url"])
-                                qualidade_info = extrair_info_stream(s)
-                                resultados.append({
-                                    "indexador": idx["nome"],
-                                    "qualidade": qualidade_info,
-                                    "url": url_limpa
-                                })
-            except Exception as e:
-                logger.warning(f"⚠️ Indexador '{idx['nome']}' indisponível: {e}")
+        # Dispara as requisições de todos os indexadores em paralelo
+        tarefas = [
+            consultar_indexador_unico(session, idx, tipo, imdb_id, season, episode)
+            for idx in indexadores
+        ]
+        respostas = await asyncio.gather(*tarefas)
+        
+        for lista_fonte in respostas:
+            resultados.extend(lista_fonte)
 
     return ordenar_fontes(resultados)
 
