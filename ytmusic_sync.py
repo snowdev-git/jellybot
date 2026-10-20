@@ -89,7 +89,25 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
                 }],
                 'quiet': True
             }
-
+            import yt_dlp
+            
+            # Opções do yt-dlp configuradas para o fluxo OAuth direto
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': output_template,
+                'username': 'oauth2',
+                'password': '',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '320',
+                }, {
+                    'key': 'EmbedThumbnail',
+                }, {
+                    'key': 'FFmpegMetadata',
+                }],
+                'quiet': False # Deixamos False temporariamente para veres o link de login no terminal se for preciso!
+            }
             loop = asyncio.get_running_loop()
             def baixar_audio():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
