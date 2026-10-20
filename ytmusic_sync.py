@@ -68,11 +68,12 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             
             import yt_dlp
             
-            # Configuração otimizada e correta do yt-dlp com o cookiefile Netscape
+            # Configuração otimizada do yt-dlp com cookies Netscape e runtime Node.js ativado
             ydl_opts = {
-                'format': 'bestaudio/best',
+                'format': 'best',
                 'outtmpl': output_template,
-                'cookiefile': 'cookies.txt',  # Utiliza o ficheiro Netscape na VPS para autenticação limpa[cite: 15]
+                'cookiefile': 'cookies.txt',  # Aponta para o ficheiro Netscape na VPS
+                'js_runtimes': {'node': True},  # Força a utilização do Node.js para resolver os desafios do YouTube
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
