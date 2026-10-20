@@ -38,16 +38,6 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
 
         ultimas_musicas = historico[:limite]
 
-        # Extrai os headers autenticados do browser.json para o yt-dlp
-        headers_yt_dlp = {}
-        try:
-            with open('browser.json', 'r', encoding='utf-8') as f:
-                b_data = json.load(f)
-                if isinstance(b_data, dict):
-                    headers_yt_dlp = b_data.get('headers', b_data)
-        except Exception as e:
-            logger.warning(f"⚠️ Aviso ao ler headers do browser.json: {e}")
-
         for item in ultimas_musicas:
             if MUSICA_PAUSADA:
                 break
@@ -74,24 +64,8 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             os.makedirs("downloads", exist_ok=True)
             
             import yt_dlp
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': output_template,
-                'http_headers': headers_yt_dlp, # Injeta os headers reais do teu browser.json
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '320',
-                }, {
-                    'key': 'EmbedThumbnail',
-                }, {
-                    'key': 'FFmpegMetadata',
-                }],
-                'quiet': True
-            }
-            import yt_dlp
             
-            # Opções do yt-dlp configuradas para o fluxo OAuth direto
+            # Configuração limpa do yt-dlp com fluxo OAuth direto para autorizar na VPS
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': output_template,
@@ -106,8 +80,9 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
                 }, {
                     'key': 'FFmpegMetadata',
                 }],
-                'quiet': False # Deixamos False temporariamente para veres o link de login no terminal se for preciso!
+                'quiet': False
             }
+
             loop = asyncio.get_running_loop()
             def baixar_audio():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
