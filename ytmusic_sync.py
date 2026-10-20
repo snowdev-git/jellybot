@@ -24,7 +24,7 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
         return  # Se estiver pausado, nem executa a verificação
 
     try:
-        # Inicializa o YTMusic usando o browser.json
+        # Inicializa o YTMusic usando o browser.json (o ytmusicapi lê JSON perfeitamente)
         yt = YTMusic('browser.json')
         historico = yt.get_history()
         
@@ -64,14 +64,10 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             
             import yt_dlp
             
-            # Caminho absoluto para o browser.json para garantir que o yt-dlp o encontra independentemente do diretório de execução
-            caminho_cookies = os.path.abspath('browser.json')
-            
+            # Opções do yt-dlp limpas para evitar conflito de formato de cookies com o JSON
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': output_template,
-                # Passa os cookies do browser.json para o yt-dlp evitar bloqueio de bot do YouTube
-                'cookiefile': caminho_cookies if os.path.exists(caminho_cookies) else None,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
