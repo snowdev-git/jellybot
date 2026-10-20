@@ -25,7 +25,7 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
         return  # Se estiver pausado, nem executa a verificação
 
     try:
-        # Verifica se o browser.json existe na VPS
+        # Verifica se o browser.json existe na VPS para a API do YTMusic
         if not os.path.exists('browser.json'):
             logger.error("❌ Ficheiro 'browser.json' não encontrado na pasta do JellyBot!")
             return
@@ -65,12 +65,11 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             
             import yt_dlp
             
-            # Configuração limpa do yt-dlp com fluxo OAuth direto para autorizar na VPS
+            # Configuração correta do yt-dlp apontando para o ficheiro de cookies Netscape
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': output_template,
-                'username': 'oauth2',
-                'password': '',
+                'cookiefile': 'cookies.txt',  # Usa o ficheiro Netscape para autenticar na VPS
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
@@ -80,7 +79,7 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
                 }, {
                     'key': 'FFmpegMetadata',
                 }],
-                'quiet': False
+                'quiet': True
             }
 
             loop = asyncio.get_running_loop()
