@@ -1,11 +1,12 @@
 import os
+import json
 import asyncio
 from ytmusicapi import YTMusic
 import aiofiles
 from database import salvar_midia, obter_midia
 from logger import logger
 
-# Variável global de controle de pausa (Inicia como True para começar pausado por padrão e evitar bloqueios na VPS)
+# Variável global de controle de pausa (Inicia como True para começar pausado por padrão)
 MUSICA_PAUSADA = True
 
 def alternar_pausa_musica():
@@ -24,6 +25,11 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
         return  # Se estiver pausado, nem executa a verificação
 
     try:
+        # Verifica se o browser.json existe na VPS
+        if not os.path.exists('browser.json'):
+            logger.error("❌ Ficheiro 'browser.json' não encontrado na pasta do JellyBot!")
+            return
+
         yt = YTMusic('browser.json')
         historico = yt.get_history()
         
@@ -31,6 +37,16 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             return
 
         ultimas_musicas = historico[:limite]
+
+        # Extrai os headers autenticados do browser.json para o yt-dlp
+        headers_yt_dlp = {}
+        try:
+            with open('browser.json', 'r', encoding='utf-8') as f:
+                b_data = json.load(f)
+                if isinstance(b_data, dict):
+                    headers_yt_dlp = b_data.get('headers', b_data)
+        except Exception as e:
+            logger.warning(f"⚠️ Aviso ao ler headers do browser.json: {e}")
 
         for item in ultimas_musicas:
             if MUSICA_PAUSADA:
@@ -61,6 +77,7 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': output_template,
+                'http_headers': headers_yt_dlp, # Injeta os headers reais do teu browser.json
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
