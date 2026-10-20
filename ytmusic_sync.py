@@ -63,9 +63,15 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             os.makedirs("downloads", exist_ok=True)
             
             import yt_dlp
+            
+            # Caminho absoluto para o browser.json para garantir que o yt-dlp o encontra independentemente do diretório de execução
+            caminho_cookies = os.path.abspath('browser.json')
+            
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': output_template,
+                # Passa os cookies do browser.json para o yt-dlp evitar bloqueio de bot do YouTube
+                'cookiefile': caminho_cookies if os.path.exists(caminho_cookies) else None,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
