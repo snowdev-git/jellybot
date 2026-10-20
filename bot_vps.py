@@ -26,6 +26,7 @@ from downloader import (
     processar_e_hospedar_midia,
     limpar_nome
 )
+from ytmusic_sync import sincronizar_historico_ytmusic
 
 bot = telebot.TeleBot(Config.TELEGRAM_TOKEN)
 SESSAO_OPCOES = {}
@@ -449,9 +450,29 @@ def callback_handler(call):
 
         threading.Thread(target=tarefa_download, daemon=True).start()
 
+async def loop_sincronizacao_musica():
+    """Verifica o histórico do YT Music a cada minuto em background."""
+    logger.info("🎵 Tarefa de Sincronização do YouTube Music iniciada em background.")
+    await asyncio.sleep(10) # Aguarda 10s após o start inicial
+    
+    while True:
+        try:
+            await sincronizar_historico_ytmusic(
+                telegram_client=client,
+                chat_id=Config.CANAL_STORAGE_ID,
+                limite=30 # Lê agora as últimas 30 músicas tocadas
+            )
+        except Exception as e:
+            logger.error(f"❌ Erro inesperado no loop de música: {e}")
+        
+        await asyncio.sleep(60) # Pausa por apenas 1 minuto (60 segundos)
+
 def rodar_loop_principal():
     asyncio.set_event_loop(MAIN_LOOP)
     init_db()
+    # Adiciona a tarefa contínua da música ao loop principal
+    MAIN_LOOP.create_task(loop_sincronizacao_musica())
+    # Inicia o servidor Web/API
     MAIN_LOOP.run_until_complete(iniciar_servidor())
     MAIN_LOOP.run_forever()
 

@@ -21,6 +21,7 @@ from database import (
     obter_mapa_status_midias
 )
 from downloader import buscar_fontes_indexadores, processar_e_hospedar_midia
+from ytmusic_sync import alternar_pausa_musica, obter_status_pausa_musica
 
 FILA_PAUSADA = False
 
@@ -89,10 +90,14 @@ async def handle_stream(request):
     midia = obter_midia(media_id)
 
     if not midia:
-        return web.Response(status=404, text="Mídia não encontrada na base de dados.")
+        if media_id and media_id.isdigit():
+            msg_ids_raw = media_id
+        else:
+            return web.Response(status=404, text="Mídia não encontrada na base de dados.")
+    else:
+        msg_ids_raw = str(midia["msg_id_telegram"])
 
-    msg_ids_raw = str(midia["msg_id_telegram"]).split(",")
-    msg_ids = [int(m.strip()) for m in msg_ids_raw if m.strip().isdigit()]
+    msg_ids = [int(m.strip()) for m in msg_ids_raw.split(",") if m.strip().isdigit()]
 
     if not msg_ids:
         return web.Response(status=404, text="Nenhum ID de mensagem registrado no Telegram Storage.")
@@ -133,7 +138,7 @@ async def handle_stream(request):
         length = end - start + 1
 
         headers = {
-            "Content-Type": "video/mp4",
+            "Content-Type": "application/octet-stream",
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{tamanho_total}",
             "Content-Length": str(length),
@@ -325,6 +330,16 @@ async def api_delete_queue(request):
         remover_midia(media_id)
     return web.json_response({"success": True})
 
+# Novas Rotas para Controlo de Músicas (YT Music)
+async def api_toggle_music_pause(request):
+    estado = alternar_pausa_musica()
+    status_str = "PAUSADO ⏸️" if estado else "RODANDO ▶️"
+    logger.info(f"🎵 Sincronização de músicas alterada: {status_str}")
+    return web.json_response({"success": True, "music_paused": estado})
+
+async def api_get_music_status(request):
+    return web.json_response({"music_paused": obter_status_pausa_musica()})
+
 async def api_catalog_movies(request):
     api_key = Config.TMDB_API_KEY
     url = f"https://api.themoviedb.org/3/movie/now_playing?api_key={api_key}&language=pt-BR&page=1"
@@ -477,7 +492,7 @@ async def handle_web_app(request):
             </div>
 
             <div id="detail-movie-content" class="hidden space-y-4 glass p-6 rounded-3xl">
-                <h3 class="text-lg font-extrabold text-sky-400 mb-2"><i class="fa-solid fa-cloud-arrow-down mr-2"></i>Opcoes de Download e Fontes</h3>
+                <h3 class="text-lg font-extrabold text-sky-400 mb-2"><i class="fa-solid fa-cloud-arrow-down mr-2"></i>Opções de Download e Fontes</h3>
                 <div id="movie-sources-list" class="space-y-3"></div>
             </div>
         </div>
@@ -485,7 +500,7 @@ async def handle_web_app(request):
         <div id="sec-queue" class="hidden space-y-4">
             <div class="glass p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-center gap-4">
                 <div class="flex items-center gap-3">
-                    <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2"><i class="fa-solid fa-list-check text-sky-400"></i> Fila de Automacao</h2>
+                    <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2"><i class="fa-solid fa-list-check text-sky-400"></i> Fila de Automação</h2>
                     <span id="queue-status-badge" class="text-xs px-3 py-1 rounded-full font-bold"></span>
                 </div>
                 <button id="btn-toggle-pause" onclick="alternarPausaFila()" class="px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg">
@@ -494,16 +509,39 @@ async def handle_web_app(request):
             <div id="queue-list" class="space-y-4"></div>
         </div>
 
-        <div id="sec-library" class="hidden space-y-4">
-            <h2 class="text-xl font-extrabold text-slate-100 mb-2 flex items-center gap-2"><i class="fa-solid fa-film text-emerald-400"></i> Midias Ativas no Jellyfin</h2>
-            <div id="library-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+        <div id="sec-library" class="hidden space-y-6">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2">
+                    <i class="fa-solid fa-film text-emerald-400"></i> Mídias Ativas no Jellyfin
+                </h2>
+                <!-- Filtros por categoria e Botão de Pausa de Músicas -->
+                <div class="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between">
+                    <div class="flex bg-slate-900 p-1.5 rounded-2xl border border-slate-800 gap-1 text-xs font-bold">
+                        <button onclick="filtrarBiblioteca('all')" id="lib-filter-all" class="px-4 py-2 rounded-xl transition bg-sky-600 text-white">Todos</button>
+                        <button onclick="filtrarBiblioteca('movie')" id="lib-filter-movie" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">🎬 Filmes</button>
+                        <button onclick="filtrarBiblioteca('series')" id="lib-filter-series" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">📺 Séries</button>
+                        <button onclick="filtrarBiblioteca('music')" id="lib-filter-music" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">🎵 Músicas</button>
+                    </div>
+                    
+                    <button onclick="alternarPausaMusica()" id="btn-music-pause" class="px-4 py-2 rounded-xl font-bold text-xs transition bg-slate-800 border border-slate-700 text-slate-300 flex items-center gap-2 shadow-lg">
+                        <i class="fa-solid fa-music"></i> <span id="music-pause-text">A carregar...</span>
+                    </button>
+                </div>
+            </div>
+
+            <div id="library-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
         </div>
     </div>
 
     <div id="ep-sources-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
         <div class="glass p-6 rounded-3xl max-w-2xl w-full border border-sky-500/30 space-y-4 max-h-[90vh] overflow-y-auto">
             <div class="flex justify-between items-center border-b border-slate-700/60 pb-3">
-                <h3 id="ep-sources-title" class="text-lg font-extrabold text-sky-400"></h3>
+                <div class="flex items-center gap-3">
+                    <h3 id="ep-sources-title" class="text-lg font-extrabold text-sky-400"></h3>
+                    <button onclick="recarregarFontesEp()" title="Buscar novamente" class="bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs px-3 py-1.5 rounded-xl border border-slate-700 transition flex items-center gap-1.5">
+                        <i class="fa-solid fa-rotate-right"></i> Recarregar
+                    </button>
+                </div>
                 <button onclick="fecharModalEp()" class="text-slate-400 hover:text-white text-2xl font-bold">&times;</button>
             </div>
             <div id="ep-sources-list" class="space-y-2"></div>
@@ -517,7 +555,6 @@ async def handle_web_app(request):
         </div>
     </div>
 
-    <!-- Contêiner de Notificações Toast Flutuantes -->
     <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
     <script>
@@ -525,6 +562,7 @@ async def handle_web_app(request):
         let currentSelectedEp = null;
         let isQueuePaused = false;
         let lastQueueState = {};
+        let filtroBibliotecaAtual = 'all';
 
         function showToast(mensagem, tipo = 'info') {
             const container = document.getElementById('toast-container');
@@ -584,7 +622,10 @@ async def handle_web_app(request):
             if(activeBtn) activeBtn.className = 'px-4 py-2 rounded-xl font-bold transition bg-blue-600 text-white shadow-lg shadow-blue-500/20';
 
             if (t === 'search') carregarDashboardHome();
-            if (t === 'queue' || t === 'library') atualizarFilaEBiblioteca();
+            if (t === 'queue' || t === 'library') {
+                atualizarFilaEBiblioteca();
+                if (t === 'library') atualizarStatusBotaoMusica();
+            }
         }
 
         function voltarParaPesquisa() {
@@ -824,6 +865,12 @@ async def handle_web_app(request):
             document.getElementById('ep-sources-list').innerHTML = html || '<p class="text-xs text-amber-400 p-2 text-center">Nenhuma fonte automática encontrada. Cole um link direto abaixo.</p>';
         }
 
+        function recarregarFontesEp() {
+            if (currentSelectedEp) {
+                abrirModalFontesEp(currentSelectedEp.season, currentSelectedEp.ep, currentSelectedEp.epName);
+            }
+        }
+
         function fecharModalEp() {
             document.getElementById('ep-sources-modal').classList.add('hidden');
         }
@@ -853,8 +900,19 @@ async def handle_web_app(request):
         }
 
         async function carregarFontesFilme(tmdbId) {
-            document.getElementById('movie-sources-list').innerHTML = '<div class="text-center py-6 text-sky-400 font-bold"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Buscando fontes do filme...</div>';
-            
+            const container = document.getElementById('detail-movie-content');
+            container.innerHTML = `
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-extrabold text-sky-400"><i class="fa-solid fa-cloud-arrow-down mr-2"></i>Opções de Download e Fontes</h3>
+                    <button onclick="carregarFontesFilme('${tmdbId}')" class="bg-slate-800 hover:bg-sky-600 text-xs text-sky-400 hover:text-white font-bold px-3 py-2 rounded-xl border border-slate-700 transition flex items-center gap-1.5">
+                        <i class="fa-solid fa-rotate-right"></i> Recarregar Fontes
+                    </button>
+                </div>
+                <div id="movie-sources-list" class="space-y-3">
+                    <div class="text-center py-6 text-sky-400 font-bold"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Buscando fontes do filme...</div>
+                </div>
+            `;
+
             const data = await fetch(`/api/sources?tmdb_id=${tmdbId}&tipo=movie`).then(r => r.json());
 
             let html = '';
@@ -869,7 +927,7 @@ async def handle_web_app(request):
                 </div>`;
             });
 
-            document.getElementById('movie-sources-list').innerHTML = html || '<p class="text-xs text-amber-400 p-2">Nenhuma fonte encontrada automaticamente nos indexadores.</p>';
+            document.getElementById('movie-sources-list').innerHTML = html || '<p class="text-xs text-amber-400 p-2 text-center">Nenhuma fonte encontrada nos indexadores. Clique em Recarregar para tentar novamente.</p>';
         }
 
         async function adicionarFilmeAFila(url, qualidade) {
@@ -892,6 +950,40 @@ async def handle_web_app(request):
             atualizarFilaEBiblioteca();
         }
 
+        async function atualizarStatusBotaoMusica() {
+            try {
+                const res = await fetch('/api/music/status').then(r => r.json());
+                const btn = document.getElementById('btn-music-pause');
+                const txt = document.getElementById('music-pause-text');
+                if(res.music_paused) {
+                    btn.className = 'px-4 py-2 rounded-xl font-bold text-xs transition bg-amber-600/20 border border-amber-500/40 text-amber-400 flex items-center gap-2 shadow-lg';
+                    txt.innerText = 'Músicas Pausadas ⏸️';
+                } else {
+                    btn.className = 'px-4 py-2 rounded-xl font-bold text-xs transition bg-emerald-600/20 border border-emerald-500/40 text-emerald-400 flex items-center gap-2 shadow-lg';
+                    txt.innerText = 'Músicas Ativas ▶️';
+                }
+            } catch(e) {}
+        }
+
+        async function alternarPausaMusica() {
+            await fetch('/api/music/toggle_pause', { method: 'POST' });
+            atualizarStatusBotaoMusica();
+            showToast('Estado do rastreamento de músicas alterado!', 'success');
+        }
+
+        function filtrarBiblioteca(categoria) {
+            filtroBibliotecaAtual = categoria;
+            ['all', 'movie', 'series', 'music'].forEach(cat => {
+                const btn = document.getElementById('lib-filter-' + cat);
+                if (btn) {
+                    btn.className = cat === categoria
+                        ? 'px-4 py-2 rounded-xl transition bg-sky-600 text-white'
+                        : 'px-4 py-2 rounded-xl transition text-slate-400 hover:text-white';
+                }
+            });
+            atualizarFilaEBiblioteca();
+        }
+
         async function atualizarFilaEBiblioteca() {
             const data = await fetch('/api/queue').then(r => r.json());
             isQueuePaused = data.fila_pausada;
@@ -899,12 +991,12 @@ async def handle_web_app(request):
             const badge = document.getElementById('queue-status-badge');
             const btnPause = document.getElementById('btn-toggle-pause');
 
-            if(isQueuePaused) {
+            if(isQueuePaused && badge && btnPause) {
                 badge.className = 'text-xs px-3 py-1 rounded-full font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30';
                 badge.innerHTML = '<i class="fa-solid fa-pause mr-1"></i>FILA PAUSADA';
                 btnPause.className = 'px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30';
                 btnPause.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Fila';
-            } else {
+            } else if(badge && btnPause) {
                 badge.className = 'text-xs px-3 py-1 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
                 badge.innerHTML = '<i class="fa-solid fa-play mr-1"></i>FILA ATIVA';
                 btnPause.className = 'px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/30';
@@ -942,20 +1034,41 @@ async def handle_web_app(request):
                     ${item.erro_msg ? `<p class="text-xs text-rose-400 bg-rose-950/60 p-3 rounded-xl border border-rose-900/50">${item.erro_msg}</p>` : ''}
                 </div>`;
             });
-            document.getElementById('queue-list').innerHTML = qHtml || '<p class="text-slate-400 text-sm py-4">A fila de espera está vazia.</p>';
+            const queueListEl = document.getElementById('queue-list');
+            if(queueListEl) queueListEl.innerHTML = qHtml || '<p class="text-slate-400 text-sm py-4">A fila de espera está vazia.</p>';
+
+            let salvos = data.salvos || [];
+            if (filtroBibliotecaAtual !== 'all') {
+                salvos = salvos.filter(m => m.tipo === filtroBibliotecaAtual);
+            }
 
             let lHtml = '';
-            (data.salvos || []).forEach(m => {
+            salvos.forEach(m => {
+                let icone = 'fa-film text-sky-400';
+                let tagTipo = 'FILME';
+                if (m.tipo === 'series') { icone = 'fa-tv text-indigo-400'; tagTipo = 'SÉRIE'; }
+                if (m.tipo === 'music') { icone = 'fa-music text-emerald-400'; tagTipo = 'MÚSICA'; }
+
                 lHtml += `
-                <div class="glass p-4 rounded-2xl flex justify-between items-center border border-slate-800">
-                    <div>
-                        <h4 class="font-bold text-white text-sm">${m.titulo} (${m.ano})</h4>
-                        <p class="text-xs text-sky-400 font-semibold mt-0.5">${m.qualidade}</p>
+                <div class="glass p-4 rounded-2xl flex justify-between items-center border border-slate-800 hover:border-slate-700 transition">
+                    <div class="flex items-center gap-3.5">
+                        <div class="w-10 h-10 rounded-xl bg-slate-900 border border-slate-700/60 flex items-center justify-center text-lg">
+                            <i class="fa-solid ${icone}"></i>
+                        </div>
+                        <div>
+                            <span class="text-[10px] font-black tracking-wider text-slate-400">${tagTipo}</span>
+                            <h4 class="font-bold text-white text-sm line-clamp-1">${m.titulo} ${m.ano && m.ano !== 'N/A' ? `(${m.ano})` : ''}</h4>
+                            <p class="text-xs text-sky-400 font-semibold mt-0.5">${m.qualidade || 'Ativo'}</p>
+                        </div>
                     </div>
-                    <button onclick="deletarMidia('${m.media_id}')" class="text-slate-500 hover:text-rose-400 p-2 transition text-sm"><i class="fa-solid fa-trash"></i></button>
+                    <button onclick="deletarMidia('${m.media_id}')" title="Apagar da biblioteca" class="text-slate-500 hover:text-rose-400 p-2.5 transition text-base rounded-xl hover:bg-rose-950/30">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
                 </div>`;
             });
-            document.getElementById('library-list').innerHTML = lHtml || '<p class="text-slate-400 text-sm py-4">Nenhuma mídia ativa no Jellyfin.</p>';
+
+            const libraryListEl = document.getElementById('library-list');
+            if(libraryListEl) libraryListEl.innerHTML = lHtml || `<p class="text-slate-400 text-sm py-8 col-span-full text-center">Nenhuma mídia encontrada na categoria selecionada.</p>`;
         }
 
         async function retryFila(id) {
@@ -977,12 +1090,13 @@ async def handle_web_app(request):
         document.addEventListener('DOMContentLoaded', () => {
             carregarDashboardHome();
             monitorarNotificacoesFila();
+            atualizarStatusBotaoMusica();
         });
 
         setInterval(monitorarNotificacoesFila, 3000);
 
         setInterval(() => {
-            if(!document.getElementById('sec-queue').classList.contains('hidden')) {
+            if(!document.getElementById('sec-queue').classList.contains('hidden') || !document.getElementById('sec-library').classList.contains('hidden')) {
                 atualizarFilaEBiblioteca();
             }
         }, 2000);
@@ -1011,6 +1125,10 @@ async def iniciar_servidor():
     app.router.add_get("/api/queue", api_get_queue)
     app.router.add_post("/api/queue/retry", api_retry_queue)
     app.router.add_post("/api/queue/delete", api_delete_queue)
+    
+    # Rotas de Controlo de Músicas
+    app.router.add_post("/api/music/toggle_pause", api_toggle_music_pause)
+    app.router.add_get("/api/music/status", api_get_music_status)
     
     app.router.add_get("/api/catalog/movies", api_catalog_movies)
     app.router.add_get("/api/catalog/series", api_catalog_series)

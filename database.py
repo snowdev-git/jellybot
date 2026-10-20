@@ -96,6 +96,17 @@ def listar_midias(tipo=None):
 def remover_midia(media_id):
     with get_connection() as conn:
         cursor = conn.cursor()
+        
+        # Localiza e remove o arquivo físico no servidor se existir
+        cursor.execute("SELECT caminho_strm FROM midias WHERE media_id = ?", (media_id,))
+        row = cursor.fetchone()
+        if row and row["caminho_strm"] and os.path.exists(row["caminho_strm"]):
+            try:
+                os.remove(row["caminho_strm"])
+                logger.info(f"🗑️ Arquivo físico apagado do disco: {row['caminho_strm']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Não foi possível apagar o arquivo físico: {e}")
+
         cursor.execute("DELETE FROM midias WHERE media_id = ?", (media_id,))
         cursor.execute("DELETE FROM fila WHERE media_id = ?", (media_id,))
         conn.commit()
