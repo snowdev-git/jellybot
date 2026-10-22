@@ -21,7 +21,6 @@ from database import (
     obter_mapa_status_midias
 )
 from downloader import buscar_fontes_indexadores, processar_e_hospedar_midia
-from ytmusic_sync import alternar_pausa_musica, obter_status_pausa_musica
 
 FILA_PAUSADA = False
 
@@ -330,16 +329,6 @@ async def api_delete_queue(request):
         remover_midia(media_id)
     return web.json_response({"success": True})
 
-# Novas Rotas para Controlo de Músicas (YT Music)
-async def api_toggle_music_pause(request):
-    estado = alternar_pausa_musica()
-    status_str = "PAUSADO ⏸️" if estado else "RODANDO ▶️"
-    logger.info(f"🎵 Sincronização de músicas alterada: {status_str}")
-    return web.json_response({"success": True, "music_paused": estado})
-
-async def api_get_music_status(request):
-    return web.json_response({"music_paused": obter_status_pausa_musica()})
-
 async def api_catalog_movies(request):
     api_key = Config.TMDB_API_KEY
     url = f"https://api.themoviedb.org/3/movie/now_playing?api_key={api_key}&language=pt-BR&page=1"
@@ -514,18 +503,13 @@ async def handle_web_app(request):
                 <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2">
                     <i class="fa-solid fa-film text-emerald-400"></i> Mídias Ativas no Jellyfin
                 </h2>
-                <!-- Filtros por categoria e Botão de Pausa de Músicas -->
+                <!-- Filtros por categoria -->
                 <div class="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between">
                     <div class="flex bg-slate-900 p-1.5 rounded-2xl border border-slate-800 gap-1 text-xs font-bold">
                         <button onclick="filtrarBiblioteca('all')" id="lib-filter-all" class="px-4 py-2 rounded-xl transition bg-sky-600 text-white">Todos</button>
                         <button onclick="filtrarBiblioteca('movie')" id="lib-filter-movie" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">🎬 Filmes</button>
                         <button onclick="filtrarBiblioteca('series')" id="lib-filter-series" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">📺 Séries</button>
-                        <button onclick="filtrarBiblioteca('music')" id="lib-filter-music" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">🎵 Músicas</button>
                     </div>
-                    
-                    <button onclick="alternarPausaMusica()" id="btn-music-pause" class="px-4 py-2 rounded-xl font-bold text-xs transition bg-slate-800 border border-slate-700 text-slate-300 flex items-center gap-2 shadow-lg">
-                        <i class="fa-solid fa-music"></i> <span id="music-pause-text">A carregar...</span>
-                    </button>
                 </div>
             </div>
 
@@ -624,7 +608,6 @@ async def handle_web_app(request):
             if (t === 'search') carregarDashboardHome();
             if (t === 'queue' || t === 'library') {
                 atualizarFilaEBiblioteca();
-                if (t === 'library') atualizarStatusBotaoMusica();
             }
         }
 
@@ -950,30 +933,9 @@ async def handle_web_app(request):
             atualizarFilaEBiblioteca();
         }
 
-        async function atualizarStatusBotaoMusica() {
-            try {
-                const res = await fetch('/api/music/status').then(r => r.json());
-                const btn = document.getElementById('btn-music-pause');
-                const txt = document.getElementById('music-pause-text');
-                if(res.music_paused) {
-                    btn.className = 'px-4 py-2 rounded-xl font-bold text-xs transition bg-amber-600/20 border border-amber-500/40 text-amber-400 flex items-center gap-2 shadow-lg';
-                    txt.innerText = 'Músicas Pausadas ⏸️';
-                } else {
-                    btn.className = 'px-4 py-2 rounded-xl font-bold text-xs transition bg-emerald-600/20 border border-emerald-500/40 text-emerald-400 flex items-center gap-2 shadow-lg';
-                    txt.innerText = 'Músicas Ativas ▶️';
-                }
-            } catch(e) {}
-        }
-
-        async function alternarPausaMusica() {
-            await fetch('/api/music/toggle_pause', { method: 'POST' });
-            atualizarStatusBotaoMusica();
-            showToast('Estado do rastreamento de músicas alterado!', 'success');
-        }
-
         function filtrarBiblioteca(categoria) {
             filtroBibliotecaAtual = categoria;
-            ['all', 'movie', 'series', 'music'].forEach(cat => {
+            ['all', 'movie', 'series'].forEach(cat => {
                 const btn = document.getElementById('lib-filter-' + cat);
                 if (btn) {
                     btn.className = cat === categoria
@@ -1047,7 +1009,6 @@ async def handle_web_app(request):
                 let icone = 'fa-film text-sky-400';
                 let tagTipo = 'FILME';
                 if (m.tipo === 'series') { icone = 'fa-tv text-indigo-400'; tagTipo = 'SÉRIE'; }
-                if (m.tipo === 'music') { icone = 'fa-music text-emerald-400'; tagTipo = 'MÚSICA'; }
 
                 lHtml += `
                 <div class="glass p-4 rounded-2xl flex justify-between items-center border border-slate-800 hover:border-slate-700 transition">
@@ -1090,7 +1051,6 @@ async def handle_web_app(request):
         document.addEventListener('DOMContentLoaded', () => {
             carregarDashboardHome();
             monitorarNotificacoesFila();
-            atualizarStatusBotaoMusica();
         });
 
         setInterval(monitorarNotificacoesFila, 3000);
@@ -1125,10 +1085,6 @@ async def iniciar_servidor():
     app.router.add_get("/api/queue", api_get_queue)
     app.router.add_post("/api/queue/retry", api_retry_queue)
     app.router.add_post("/api/queue/delete", api_delete_queue)
-    
-    # Rotas de Controlo de Músicas
-    app.router.add_post("/api/music/toggle_pause", api_toggle_music_pause)
-    app.router.add_get("/api/music/status", api_get_music_status)
     
     app.router.add_get("/api/catalog/movies", api_catalog_movies)
     app.router.add_get("/api/catalog/series", api_catalog_series)
