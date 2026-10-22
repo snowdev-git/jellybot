@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import requests
 from ytmusicapi import YTMusic
 import aiofiles
 from database import salvar_midia, obter_midia
@@ -22,7 +23,7 @@ def obter_status_pausa_musica():
 async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
     global MUSICA_PAUSADA
     if MUSICA_PAUSADA:
-        return  # Se estiver pausado, nem executa a verificação
+        return
 
     try:
         # Verifica se o browser.json existe na VPS para a API do YTMusic
@@ -39,7 +40,6 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
         ultimas_musicas = historico[:limite]
 
         for item in ultimas_musicas:
-            # Se o utilizador pausar a meio do ciclo, interrompe imediatamente
             if MUSICA_PAUSADA:
                 break
 
@@ -53,69 +53,69 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
 
             media_id = f"music_{videoId}"
             
-            # Verifica se já temos esta música guardada na base de dados
             midia_existente = obter_midia(media_id)
             if midia_existente:
                 continue
 
             logger.info(f"🎵 Nova música detetada no histórico: {artista} - {titulo}")
 
-            # Limpa caracteres inválidos para nomes de ficheiros seguros
             nome_arquivo_formatado = f"{artista} - {titulo}".replace("/", "-").replace("\\", "-").replace(":", "-").strip()
             caminho_mp3_final = f"downloads/{nome_arquivo_formatado}.mp3"
-            output_template = f"downloads/{nome_arquivo_formatado}.%(ext)s"
             os.makedirs("downloads", exist_ok=True)
             
-            import yt_dlp
-            
-            # Configuração otimizada do yt-dlp com cookies Netscape e runtime Node.js ativado
-            ydl_opts = {
-                'format': 'best',
-                'outtmpl': output_template,
-                'cookiefile': 'cookies.txt',  # Aponta para o ficheiro Netscape na VPS
-                'js_runtimes': {'node': True},  # Força a utilização do Node.js para resolver os desafios do YouTube
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '320',
-                }, {
-                    'key': 'EmbedThumbnail',
-                }, {
-                    'key': 'FFmpegMetadata',
-                }],
-                'quiet': True
-            }
+            # --- NOVA LÓGICA: DOWNLOAD VIA API EXTERNA ---
+            def baixar_via_api():
+                api_url = "https://api.cobalt.tools/api/json"
+                headers = {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                payload = {
+                    "url": f"https://music.youtube.com/watch?v={videoId}",
+                    "isAudioOnly": True,
+                    "aFormat": "mp3"
+                }
+                
+                try:
+                    # 1. Pede à API para processar o link do YouTube
+                    res = requests.post(api_url, json=payload, headers=headers, timeout=30)
+                    res.raise_for_status()
+                    dados = res.json()
+                    
+                    if "url" in dados:
+                        download_url = dados["url"]
+                        
+                        # 2. Descarrega o MP3 direto da API para a VPS
+                        audio_res = requests.get(download_url, stream=True, timeout=60)
+                        audio_res.raise_for_status()
+                        
+                        with open(caminho_mp3_final, 'wb') as f:
+                            for chunk in audio_res.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                        return True
+                    else:
+                        logger.warning(f"⚠️ Resposta inesperada da API para {titulo}: {dados}")
+                        return False
+                except Exception as e:
+                    logger.error(f"❌ Falha ao baixar '{titulo}' via API: {e}")
+                    return False
 
             loop = asyncio.get_running_loop()
-            def baixar_audio():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([f"https://music.youtube.com/watch?v={videoId}"])
-
-            await loop.run_in_executor(None, baixar_audio)
-
-            # Localiza o ficheiro MP3 gerado
-            if os.path.exists(caminho_mp3_final):
-                caminho_mp3 = caminho_mp3_final
-            else:
-                caminho_mp3_fallback = f"downloads/{videoId}.mp3"
-                if os.path.exists(caminho_mp3_fallback):
-                    os.rename(caminho_mp3_fallback, caminho_mp3_final)
-                    caminho_mp3 = caminho_mp3_final
-                else:
-                    caminho_mp3 = caminho_mp3_fallback
-
-            if not os.path.exists(caminho_mp3):
+            sucesso_download = await loop.run_in_executor(None, baixar_via_api)
+            
+            if not sucesso_download or not os.path.exists(caminho_mp3_final):
                 continue
+            # ---------------------------------------------
 
-            # Envia o ficheiro MP3 com o nome limpo para o canal do Telegram Storage
             msg_telegram = await telegram_client.send_file(
                 chat_id,
-                caminho_mp3,
+                caminho_mp3_final,
                 caption=f"🎵 **{titulo}**\n👤 {artista}",
                 parse_mode='md'
             )
 
-            # Cria o ficheiro .strm para o Jellyfin
             pasta_strm = "midias/musicas"
             os.makedirs(pasta_strm, exist_ok=True)
             caminho_strm = os.path.join(pasta_strm, f"{videoId}.strm")
@@ -127,7 +127,6 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
             async with aiofiles.open(caminho_strm, 'w', encoding='utf-8') as f:
                 await f.write(url_stream)
 
-            # Regista na base de dados unificada
             salvar_midia(
                 media_id=media_id,
                 tipo="music",
@@ -139,9 +138,8 @@ async def sincronizar_historico_ytmusic(telegram_client, chat_id, limite=30):
                 msg_id_telegram=str(msg_telegram.id)
             )
 
-            # Limpa o ficheiro MP3 localmente para gastar 0 MB de disco
             try:
-                os.remove(caminho_mp3)
+                os.remove(caminho_mp3_final)
             except:
                 pass
 
