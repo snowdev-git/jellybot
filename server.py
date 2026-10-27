@@ -24,6 +24,10 @@ from downloader import buscar_fontes_indexadores, processar_e_hospedar_midia
 
 FILA_PAUSADA = False
 
+def e_fonte_dublada(qualidade_str: str) -> bool:
+    q = str(qualidade_str).upper()
+    return "DUBLADO" in q and "LEGENDADO" not in q
+
 async def notificar_telegram_admin(texto: str, caminho_file: str = None):
     if Config.ADMIN_ID and Config.ADMIN_ID != 0:
         try:
@@ -44,21 +48,60 @@ async def worker_fila_processamento():
                 if item:
                     item_id = item['id']
                     titulo = item['titulo']
-                    logger.info(f"▶️ [FILA] A iniciar processamento do item: {titulo} ({item['qualidade']})")
-                    
-                    msg_inicio = f"⏳ **[JellyBot Web] Processamento Iniciado:**\n🎬 `{titulo}`\n🎧 Qualidade: `{item['qualidade']}`"
+                    qualidade = item['qualidade']
+                    url_fonte = item['url_fonte']
+                    tipo = item['tipo']
+                    tmdb_info = item['tmdb_info']
+
+                    logger.info(f"▶️ [FILA] A iniciar processamento do item: {titulo}")
+
+                    # Se a fonte precisa de busca na hora (evita expiração de links)
+                    if url_fonte == "AUTO_SEARCH_DUBLADO" or not url_fonte:
+                        atualizar_status_fila(item_id, 'PROCESSING', '🔍 Buscando fonte DUBLADA atualizada...')
+
+                        tmdb_id = tmdb_info.get('id')
+                        season_num = tmdb_info.get('season_number', 1)
+                        ep_num = tmdb_info.get('episode_number', 1)
+
+                        url_tmdb = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-BR&append_to_response=external_ids"
+                        try:
+                            res_tv = requests.get(url_tmdb, timeout=10).json()
+                            imdb_id = res_tv.get('external_ids', {}).get('imdb_id')
+                        except Exception:
+                            imdb_id = None
+
+                        if not imdb_id:
+                            atualizar_status_fila(item_id, 'FAILED', '❌ IMDB ID não encontrado', erro_msg='Sem IMDB ID')
+                            await notificar_telegram_admin(f"❌ **Falha ao buscar fonte:** `{titulo}` (IMDB ID não encontrado)")
+                            await asyncio.sleep(2)
+                            continue
+
+                        opcoes = await buscar_fontes_indexadores("series", imdb_id, int(season_num), int(ep_num))
+                        dublados = [opt for opt in opcoes if e_fonte_dublada(opt.get('qualidade', ''))]
+
+                        if not dublados:
+                            atualizar_status_fila(item_id, 'FAILED', '❌ Nenhuma fonte DUBLADA encontrada', erro_msg='Sem links dublados')
+                            await notificar_telegram_admin(f"⚠️ **Item pulado (Sem fonte DUBLADA):** `{titulo}`\nNenhuma opção dublada encontrada no momento do download.")
+                            await asyncio.sleep(2)
+                            continue
+
+                        fonte_escolhida = dublados[0]
+                        url_fonte = fonte_escolhida['url']
+                        qualidade = fonte_escolhida['qualidade']
+
+                    msg_inicio = f"⏳ **[JellyBot Web] Processamento Iniciado:**\n🎬 `{titulo}`\n🎧 Qualidade: `{qualidade}`"
                     await notificar_telegram_admin(msg_inicio)
-                    
+
                     atualizar_status_fila(item_id, 'PROCESSING', '⏳ A verificar fonte de vídeo...')
 
                     def callback_progresso(msg_status):
                         atualizar_status_fila(item_id, 'PROCESSING', str(msg_status))
 
                     sucesso, msg_res, caminho_strm = await processar_e_hospedar_midia(
-                        url_fonte=item['url_fonte'],
-                        tipo=item['tipo'],
-                        tmdb_info=item['tmdb_info'],
-                        qualidade=item['qualidade'],
+                        url_fonte=url_fonte,
+                        tipo=tipo,
+                        tmdb_info=tmdb_info,
+                        qualidade=qualidade,
                         progress_callback=callback_progresso
                     )
 
@@ -68,7 +111,7 @@ async def worker_fila_processamento():
                         msg_sucesso = (
                             f"🎉 **[JellyBot Web] Mídia Concluída com Sucesso!**\n\n"
                             f"🎬 **Mídia:** `{titulo}`\n"
-                            f"🎧 **Qualidade:** `{item['qualidade']}`\n"
+                            f"🎧 **Qualidade:** `{qualidade}`\n"
                             f"📂 **Caminho .strm:** `{caminho_strm}`\n\n"
                             f"👉 _Disponível no Jellyfin!_"
                         )
@@ -267,7 +310,11 @@ async def api_sources(request):
         else:
             opcoes = await buscar_fontes_indexadores("series", imdb_id, int(season), int(episode))
 
-        return web.json_response({"tmdb_info": res_tmdb, "opcoes": opcoes})
+        # Reordena para priorizar DUBLADO no topo das buscas manuais
+        dublados = [opt for opt in opcoes if e_fonte_dublada(opt.get('qualidade', ''))]
+        outros = [opt for opt in opcoes if opt not in dublados]
+
+        return web.json_response({"tmdb_info": res_tmdb, "opcoes": dublados + outros})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -302,18 +349,14 @@ async def api_add_queue(request):
     return web.json_response({"success": True, "message": f"{titulo} adicionado à fila!"})
 
 async def api_add_season_queue(request):
-    """Varre e adiciona todos os episódios de uma temporada à fila automaticamente."""
+    """Enfileira a temporada em menos de 1s para buscar links frescos no momento do download."""
     try:
         data = await request.json()
         tmdb_id = data.get("tmdb_id")
         season_num = int(data.get("season", 1))
 
-        url_tmdb = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-BR&append_to_response=external_ids"
+        url_tmdb = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-BR"
         res_tv = requests.get(url_tmdb, timeout=10).json()
-        imdb_id = res_tv.get('external_ids', {}).get('imdb_id')
-
-        if not imdb_id:
-            return web.json_response({"success": False, "message": "IMDB ID não encontrado para esta série."}, status=404)
 
         url_season = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_num}?api_key={Config.TMDB_API_KEY}&language=pt-BR"
         res_season = requests.get(url_season, timeout=10).json()
@@ -325,7 +368,9 @@ async def api_add_season_queue(request):
         mapa_status = obter_mapa_status_midias()
         adicionados = 0
         ja_existentes = 0
-        sem_fonte = []
+
+        nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(res_tv.get("name", "Serie"))).strip()
+        ano = str(res_tv.get("first_air_date", "0000"))[:4]
 
         for ep in episodes:
             ep_num = int(ep.get('episode_number', 1))
@@ -335,47 +380,36 @@ async def api_add_season_queue(request):
                 ja_existentes += 1
                 continue
 
-            opcoes = await buscar_fontes_indexadores("series", imdb_id, season_num, ep_num)
-            if opcoes:
-                melhor_opcao = opcoes[0]
-                tmdb_info_ep = dict(res_tv)
-                tmdb_info_ep['season_number'] = season_num
-                tmdb_info_ep['episode_number'] = ep_num
+            titulo = f"{nome_limpo} S{season_num:02d}E{ep_num:02d}"
+            tmdb_info_ep = dict(res_tv)
+            tmdb_info_ep['season_number'] = season_num
+            tmdb_info_ep['episode_number'] = ep_num
 
-                nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(res_tv.get("name", "Serie"))).strip()
-                titulo = f"{nome_limpo} S{season_num:02d}E{ep_num:02d}"
-                ano = str(res_tv.get("first_air_date", "0000"))[:4]
-
-                adicionar_a_fila(media_id, "series", tmdb_id, titulo, ano, melhor_opcao['qualidade'], melhor_opcao['url'], tmdb_info_ep)
-                adicionados += 1
-            else:
-                sem_fonte.append(f"EP {ep_num:02d}")
+            # Adiciona com URL especial para buscar no exato momento do download
+            adicionar_a_fila(
+                media_id, "series", tmdb_id, titulo, ano,
+                "DUBLADO (Busca Automática)", "AUTO_SEARCH_DUBLADO", tmdb_info_ep
+            )
+            adicionados += 1
 
         nome_serie = res_tv.get('name', 'Série')
         msg_notif = (
-            f"⚡ **[JellyBot Web] Download de Temporada Solicitado!**\n\n"
-            f"📺 **Série:** `{nome_serie}` (Temporada {season_num})\n"
-            f"📥 **Adicionados à fila:** `{adicionados}`\n"
-            f"✅ **Já existentes/na fila:** `{ja_existentes}`"
+            f"⚡ **[JellyBot Web] Temporada {season_num} adicionada à fila!**\n\n"
+            f"📺 **Série:** `{nome_serie}`\n"
+            f"📥 **Episódios na fila:** `{adicionados}`\n"
+            f"✅ **Já existentes:** `{ja_existentes}`\n"
+            f"🎧 **Filtro:** Apenas Dublado (links atualizados na hora do download)"
         )
-        if sem_fonte:
-            msg_notif += f"\n⚠️ **Sem fontes encontradas ({len(sem_fonte)}):** `{', '.join(sem_fonte)}`"
-
         await notificar_telegram_admin(msg_notif)
-
-        res_msg = f"Temporada {season_num}: {adicionados} eps adicionados à fila!"
-        if sem_fonte:
-            res_msg += f" ({len(sem_fonte)} eps sem fonte automática)."
 
         return web.json_response({
             "success": True,
             "adicionados": adicionados,
             "ja_existentes": ja_existentes,
-            "sem_fonte": sem_fonte,
-            "message": res_msg
+            "message": f"Temporada {season_num}: {adicionados} episódios na fila (links serão obtidos um a um sem expirar)!"
         })
     except Exception as e:
-        logger.error(f"Erro ao processar lote da temporada: {e}")
+        logger.error(f"Erro ao adicionar temporada: {e}")
         return web.json_response({"success": False, "message": str(e)}, status=500)
 
 async def api_toggle_queue_pause(request):
@@ -468,7 +502,7 @@ async def api_series_continue(request):
                         info["nome"] = data.get("name", info["titulo"])
                         info["vote_average"] = data.get("vote_average", 0)
                         resultado.append(info)
-            except Exception as e:
+            except Exception:
                 resultado.append(info)
 
     return web.json_response({"status": "success", "results": resultado})
@@ -556,7 +590,7 @@ async def handle_web_app(request):
                 <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 glass p-4 rounded-2xl">
                     <div class="flex items-center space-x-3 overflow-x-auto w-full sm:w-auto pb-1" id="season-tabs"></div>
                     <button id="btn-download-season" onclick="baixarTemporadaCompleta()" class="w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs px-5 py-3 rounded-xl transition shadow-lg shadow-emerald-600/20 whitespace-nowrap flex items-center justify-center gap-2">
-                        <i class="fa-solid fa-bolt text-amber-300"></i> Baixar Temporada Completa
+                        <i class="fa-solid fa-bolt text-amber-300"></i> Baixar Temporada Completa (Dublado)
                     </button>
                 </div>
                 <div id="episodes-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
@@ -916,8 +950,7 @@ async def handle_web_app(request):
             
             const originalText = btn.innerHTML;
             btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Varrendo e adicionando episódios...';
-            showToast(`🔍 Pesquisando fontes para a Temporada ${seasonNum}...`, 'warning');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Adicionando episódios à fila...';
 
             try {
                 const res = await fetch('/api/queue/add_season', {
@@ -930,7 +963,7 @@ async def handle_web_app(request):
                 }).then(r => r.json());
 
                 if(res.success) {
-                    showToast(res.message, res.sem_fonte && res.sem_fonte.length > 0 ? 'warning' : 'success');
+                    showToast(res.message, 'success');
                     carregarEpisodios(seasonNum);
                 } else {
                     showToast(`❌ Erro: ${res.message}`, 'error');
@@ -953,11 +986,12 @@ async def handle_web_app(request):
 
             let html = '';
             (data.opcoes || []).forEach(opt => {
+                let dubloTag = opt.qualidade.toUpperCase().includes('DUBLADO') ? '<span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-md font-bold ml-1">DUBLADO</span>' : '';
                 html += `
                 <div class="flex justify-between items-center bg-slate-900/90 p-3 rounded-2xl border border-slate-800 hover:border-sky-500/50">
                     <div>
                         <span class="text-xs font-black text-sky-400">[${opt.indexador}]</span>
-                        <span class="text-xs font-bold text-white ml-2">${opt.qualidade}</span>
+                        <span class="text-xs font-bold text-white ml-2">${opt.qualidade}</span>${dubloTag}
                     </div>
                     <button onclick="adicionarEpAFila('${opt.url}', '${opt.qualidade.replace(/'/g,"")}')" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold px-4 py-2 rounded-xl transition shadow-lg shadow-emerald-600/20"><i class="fa-solid fa-plus mr-1"></i>Adicionar à Fila</button>
                 </div>`;
@@ -1019,11 +1053,12 @@ async def handle_web_app(request):
 
             let html = '';
             (data.opcoes || []).forEach(opt => {
+                let dubloTag = opt.qualidade.toUpperCase().includes('DUBLADO') ? '<span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-md font-bold ml-1">DUBLADO</span>' : '';
                 html += `
                 <div class="flex justify-between items-center bg-slate-900/90 p-4 rounded-2xl border border-slate-800 hover:border-sky-500/50">
                     <div>
                         <span class="text-xs font-black text-sky-400">[${opt.indexador}]</span>
-                        <span class="text-sm font-bold text-white ml-2">${opt.qualidade}</span>
+                        <span class="text-sm font-bold text-white ml-2">${opt.qualidade}</span>${dubloTag}
                     </div>
                     <button onclick="adicionarFilmeAFila('${opt.url}', '${opt.qualidade.replace(/'/g,"")}')" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold px-5 py-2.5 rounded-xl transition shadow-lg shadow-emerald-600/20"><i class="fa-solid fa-plus mr-1"></i>Adicionar à Fila</button>
                 </div>`;
