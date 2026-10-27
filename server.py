@@ -301,6 +301,83 @@ async def api_add_queue(request):
 
     return web.json_response({"success": True, "message": f"{titulo} adicionado à fila!"})
 
+async def api_add_season_queue(request):
+    """Varre e adiciona todos os episódios de uma temporada à fila automaticamente."""
+    try:
+        data = await request.json()
+        tmdb_id = data.get("tmdb_id")
+        season_num = int(data.get("season", 1))
+
+        url_tmdb = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={Config.TMDB_API_KEY}&language=pt-BR&append_to_response=external_ids"
+        res_tv = requests.get(url_tmdb, timeout=10).json()
+        imdb_id = res_tv.get('external_ids', {}).get('imdb_id')
+
+        if not imdb_id:
+            return web.json_response({"success": False, "message": "IMDB ID não encontrado para esta série."}, status=404)
+
+        url_season = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season_num}?api_key={Config.TMDB_API_KEY}&language=pt-BR"
+        res_season = requests.get(url_season, timeout=10).json()
+        episodes = res_season.get('episodes', [])
+
+        if not episodes:
+            return web.json_response({"success": False, "message": "Nenhum episódio encontrado na temporada."}, status=404)
+
+        mapa_status = obter_mapa_status_midias()
+        adicionados = 0
+        ja_existentes = 0
+        sem_fonte = []
+
+        for ep in episodes:
+            ep_num = int(ep.get('episode_number', 1))
+            media_id = f"tv_{tmdb_id}_s{season_num:02d}e{ep_num:02d}"
+
+            if mapa_status.get(media_id) in ['COMPLETED', 'PROCESSING', 'PENDING']:
+                ja_existentes += 1
+                continue
+
+            opcoes = await buscar_fontes_indexadores("series", imdb_id, season_num, ep_num)
+            if opcoes:
+                melhor_opcao = opcoes[0]
+                tmdb_info_ep = dict(res_tv)
+                tmdb_info_ep['season_number'] = season_num
+                tmdb_info_ep['episode_number'] = ep_num
+
+                nome_limpo = re.sub(r'[\\/*?:"<>|]', "", str(res_tv.get("name", "Serie"))).strip()
+                titulo = f"{nome_limpo} S{season_num:02d}E{ep_num:02d}"
+                ano = str(res_tv.get("first_air_date", "0000"))[:4]
+
+                adicionar_a_fila(media_id, "series", tmdb_id, titulo, ano, melhor_opcao['qualidade'], melhor_opcao['url'], tmdb_info_ep)
+                adicionados += 1
+            else:
+                sem_fonte.append(f"EP {ep_num:02d}")
+
+        nome_serie = res_tv.get('name', 'Série')
+        msg_notif = (
+            f"⚡ **[JellyBot Web] Download de Temporada Solicitado!**\n\n"
+            f"📺 **Série:** `{nome_serie}` (Temporada {season_num})\n"
+            f"📥 **Adicionados à fila:** `{adicionados}`\n"
+            f"✅ **Já existentes/na fila:** `{ja_existentes}`"
+        )
+        if sem_fonte:
+            msg_notif += f"\n⚠️ **Sem fontes encontradas ({len(sem_fonte)}):** `{', '.join(sem_fonte)}`"
+
+        await notificar_telegram_admin(msg_notif)
+
+        res_msg = f"Temporada {season_num}: {adicionados} eps adicionados à fila!"
+        if sem_fonte:
+            res_msg += f" ({len(sem_fonte)} eps sem fonte automática)."
+
+        return web.json_response({
+            "success": True,
+            "adicionados": adicionados,
+            "ja_existentes": ja_existentes,
+            "sem_fonte": sem_fonte,
+            "message": res_msg
+        })
+    except Exception as e:
+        logger.error(f"Erro ao processar lote da temporada: {e}")
+        return web.json_response({"success": False, "message": str(e)}, status=500)
+
 async def api_toggle_queue_pause(request):
     global FILA_PAUSADA
     FILA_PAUSADA = not FILA_PAUSADA
@@ -476,7 +553,12 @@ async def handle_web_app(request):
             <div id="detail-header" class="glass p-6 rounded-3xl flex flex-col md:flex-row gap-6 items-start"></div>
 
             <div id="detail-tv-content" class="hidden space-y-6">
-                <div class="flex items-center space-x-3 overflow-x-auto pb-2" id="season-tabs"></div>
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 glass p-4 rounded-2xl">
+                    <div class="flex items-center space-x-3 overflow-x-auto w-full sm:w-auto pb-1" id="season-tabs"></div>
+                    <button id="btn-download-season" onclick="baixarTemporadaCompleta()" class="w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs px-5 py-3 rounded-xl transition shadow-lg shadow-emerald-600/20 whitespace-nowrap flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-bolt text-amber-300"></i> Baixar Temporada Completa
+                    </button>
+                </div>
                 <div id="episodes-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
             </div>
 
@@ -503,7 +585,6 @@ async def handle_web_app(request):
                 <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2">
                     <i class="fa-solid fa-film text-emerald-400"></i> Mídias Ativas no Jellyfin
                 </h2>
-                <!-- Filtros por categoria -->
                 <div class="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between">
                     <div class="flex bg-slate-900 p-1.5 rounded-2xl border border-slate-800 gap-1 text-xs font-bold">
                         <button onclick="filtrarBiblioteca('all')" id="lib-filter-all" class="px-4 py-2 rounded-xl transition bg-sky-600 text-white">Todos</button>
@@ -544,6 +625,7 @@ async def handle_web_app(request):
     <script>
         let currentDetailMedia = null;
         let currentSelectedEp = null;
+        let currentSelectedSeason = 1;
         let isQueuePaused = false;
         let lastQueueState = {};
         let filtroBibliotecaAtual = 'all';
@@ -789,12 +871,14 @@ async def handle_web_app(request):
         }
 
         async function selecionarTemporada(seasonNum, btn) {
+            currentSelectedSeason = seasonNum;
             document.querySelectorAll('.season-btn').forEach(b => b.className = 'season-btn bg-slate-800 text-slate-400 hover:bg-slate-700 px-4 py-2 rounded-xl font-bold text-xs whitespace-nowrap transition');
             btn.className = 'season-btn bg-sky-600 text-white px-4 py-2 rounded-xl font-bold text-xs whitespace-nowrap transition';
             carregarEpisodios(seasonNum);
         }
 
         async function carregarEpisodios(seasonNum) {
+            currentSelectedSeason = seasonNum;
             document.getElementById('episodes-grid').innerHTML = '<div class="col-span-2 text-center py-8 text-sky-400 font-bold"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Carregando episódios...</div>';
             
             const episodes = await fetch(`/api/episodes?tmdb_id=${currentDetailMedia.tmdbId}&season=${seasonNum}`).then(r => r.json());
@@ -823,6 +907,40 @@ async def handle_web_app(request):
             });
 
             document.getElementById('episodes-grid').innerHTML = html || '<p class="col-span-2 text-center text-slate-400">Nenhum episódio retornado.</p>';
+        }
+
+        async function baixarTemporadaCompleta() {
+            if(!currentDetailMedia || currentDetailMedia.tipo !== 'tv') return;
+            const seasonNum = currentSelectedSeason;
+            const btn = document.getElementById('btn-download-season');
+            
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Varrendo e adicionando episódios...';
+            showToast(`🔍 Pesquisando fontes para a Temporada ${seasonNum}...`, 'warning');
+
+            try {
+                const res = await fetch('/api/queue/add_season', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        tmdb_id: currentDetailMedia.tmdbId,
+                        season: seasonNum
+                    })
+                }).then(r => r.json());
+
+                if(res.success) {
+                    showToast(res.message, res.sem_fonte && res.sem_fonte.length > 0 ? 'warning' : 'success');
+                    carregarEpisodios(seasonNum);
+                } else {
+                    showToast(`❌ Erro: ${res.message}`, 'error');
+                }
+            } catch(e) {
+                showToast(`❌ Erro ao enviar solicitação: ${e}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
         }
 
         async function abrirModalFontesEp(season, ep, epName) {
@@ -874,6 +992,7 @@ async def handle_web_app(request):
 
             showToast(res.message || 'Episódio adicionado à fila!', 'success');
             fecharModalEp();
+            carregarEpisodios(currentSelectedSeason);
         }
 
         async function adicionarManualEp() {
@@ -1081,6 +1200,7 @@ async def iniciar_servidor():
     app.router.add_get("/api/episodes", api_episodes)
     app.router.add_get("/api/sources", api_sources)
     app.router.add_post("/api/queue/add", api_add_queue)
+    app.router.add_post("/api/queue/add_season", api_add_season_queue)
     app.router.add_post("/api/queue/toggle_pause", api_toggle_queue_pause)
     app.router.add_get("/api/queue", api_get_queue)
     app.router.add_post("/api/queue/retry", api_retry_queue)
