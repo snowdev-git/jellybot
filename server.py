@@ -55,7 +55,6 @@ async def worker_fila_processamento():
 
                     logger.info(f"▶️ [FILA] A iniciar processamento do item: {titulo}")
 
-                    # Se a fonte precisa de busca na hora (evita expiração de links)
                     if url_fonte == "AUTO_SEARCH_DUBLADO" or not url_fonte:
                         atualizar_status_fila(item_id, 'PROCESSING', '🔍 Buscando fonte DUBLADA atualizada...')
 
@@ -310,7 +309,6 @@ async def api_sources(request):
         else:
             opcoes = await buscar_fontes_indexadores("series", imdb_id, int(season), int(episode))
 
-        # Reordena para priorizar DUBLADO no topo das buscas manuais
         dublados = [opt for opt in opcoes if e_fonte_dublada(opt.get('qualidade', ''))]
         outros = [opt for opt in opcoes if opt not in dublados]
 
@@ -349,7 +347,6 @@ async def api_add_queue(request):
     return web.json_response({"success": True, "message": f"{titulo} adicionado à fila!"})
 
 async def api_add_season_queue(request):
-    """Enfileira a temporada em menos de 1s para buscar links frescos no momento do download."""
     try:
         data = await request.json()
         tmdb_id = data.get("tmdb_id")
@@ -385,7 +382,6 @@ async def api_add_season_queue(request):
             tmdb_info_ep['season_number'] = season_num
             tmdb_info_ep['episode_number'] = ep_num
 
-            # Adiciona com URL especial para buscar no exato momento do download
             adicionar_a_fila(
                 media_id, "series", tmdb_id, titulo, ano,
                 "DUBLADO (Busca Automática)", "AUTO_SEARCH_DUBLADO", tmdb_info_ep
@@ -398,7 +394,7 @@ async def api_add_season_queue(request):
             f"📺 **Série:** `{nome_serie}`\n"
             f"📥 **Episódios na fila:** `{adicionados}`\n"
             f"✅ **Já existentes:** `{ja_existentes}`\n"
-            f"🎧 **Filtro:** Apenas Dublado (links atualizados na hora do download)"
+            f"🎧 **Filtro:** Apenas Dublado"
         )
         await notificar_telegram_admin(msg_notif)
 
@@ -406,7 +402,7 @@ async def api_add_season_queue(request):
             "success": True,
             "adicionados": adicionados,
             "ja_existentes": ja_existentes,
-            "message": f"Temporada {season_num}: {adicionados} episódios na fila (links serão obtidos um a um sem expirar)!"
+            "message": f"Temporada {season_num}: {adicionados} episódios na fila!"
         })
     except Exception as e:
         logger.error(f"Erro ao adicionar temporada: {e}")
@@ -525,12 +521,12 @@ async def handle_web_app(request):
     </style>
 </head>
 <body class="min-h-screen pb-16">
-    <nav class="glass sticky top-0 z-50 px-6 py-4 mb-8 flex justify-between items-center shadow-2xl">
+    <nav class="glass sticky top-0 z-50 px-6 py-4 mb-8 flex flex-col md:flex-row justify-between items-center shadow-2xl gap-4">
         <div class="flex items-center space-x-3 cursor-pointer" onclick="voltarParaPesquisa()">
             <span class="text-3xl">🍿</span>
             <span class="text-xl font-black bg-gradient-to-r from-sky-400 via-blue-500 to-indigo-500 bg-clip-text text-transparent">JellyBot Web</span>
         </div>
-        <div class="flex space-x-2">
+        <div class="flex flex-wrap justify-center space-x-2">
             <button onclick="tab('search')" id="tab-search" class="px-4 py-2 rounded-xl font-bold transition bg-blue-600 text-white shadow-lg shadow-blue-500/20"><i class="fa-solid fa-house mr-2"></i>Início & Pesquisa</button>
             <button onclick="tab('queue')" id="tab-queue" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-list-check mr-2"></i>Fila & Status</button>
             <button onclick="tab('library')" id="tab-library" class="px-4 py-2 rounded-xl font-bold transition bg-slate-800 hover:bg-slate-700 text-slate-300"><i class="fa-solid fa-film mr-2"></i>Biblioteca</button>
@@ -580,7 +576,7 @@ async def handle_web_app(request):
         </div>
 
         <div id="sec-detail" class="hidden space-y-6">
-            <button onclick="voltarParaPesquisa()" class="bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold px-4 py-2 rounded-xl border border-slate-700 text-xs flex items-center gap-2">
+            <button onclick="voltarParaPesquisa()" class="bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold px-4 py-2 rounded-xl border border-slate-700 text-xs flex items-center gap-2 w-max">
                 <i class="fa-solid fa-arrow-left"></i> Voltar
             </button>
 
@@ -603,12 +599,19 @@ async def handle_web_app(request):
         </div>
 
         <div id="sec-queue" class="hidden space-y-4">
-            <div class="glass p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-center gap-4">
-                <div class="flex items-center gap-3">
+            <div class="glass p-4 rounded-2xl flex flex-col lg:flex-row justify-between items-center gap-4">
+                <div class="flex items-center gap-3 w-full lg:w-auto justify-between lg:justify-start">
                     <h2 class="text-xl font-extrabold text-slate-100 flex items-center gap-2"><i class="fa-solid fa-list-check text-sky-400"></i> Fila de Automação</h2>
                     <span id="queue-status-badge" class="text-xs px-3 py-1 rounded-full font-bold"></span>
                 </div>
-                <button id="btn-toggle-pause" onclick="alternarPausaFila()" class="px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg">
+                
+                <div class="flex flex-wrap bg-slate-900 p-1.5 rounded-2xl border border-slate-800 gap-1 text-xs font-bold w-full lg:w-auto justify-center">
+                    <button onclick="filtrarFila('active')" id="q-filter-active" class="px-4 py-2 rounded-xl transition bg-sky-600 text-white">⏳ Em Fila</button>
+                    <button onclick="filtrarFila('failed')" id="q-filter-failed" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">❌ Erros</button>
+                    <button onclick="filtrarFila('completed')" id="q-filter-completed" class="px-4 py-2 rounded-xl transition text-slate-400 hover:text-white">✅ Concluídos</button>
+                </div>
+
+                <button id="btn-toggle-pause" onclick="alternarPausaFila()" class="px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 shadow-lg w-full lg:w-auto justify-center">
                 </button>
             </div>
             <div id="queue-list" class="space-y-4"></div>
@@ -648,7 +651,7 @@ async def handle_web_app(request):
                 <p class="text-xs font-bold text-slate-400 mb-2">Ou cole um Link Direto de Vídeo (HTTP/MP4):</p>
                 <div class="flex gap-2">
                     <input type="text" id="ep-manual-url" placeholder="http://servidor.com/video.mp4" class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-sm text-white focus:outline-none focus:border-sky-500">
-                    <button onclick="adicionarManualEp()" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold px-4 py-2 rounded-xl shadow-lg">➕ Adicionar Link</button>
+                    <button onclick="adicionarManualEp()" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold px-4 py-2 rounded-xl shadow-lg whitespace-nowrap">➕ Link Manual</button>
                 </div>
             </div>
         </div>
@@ -663,6 +666,7 @@ async def handle_web_app(request):
         let isQueuePaused = false;
         let lastQueueState = {};
         let filtroBibliotecaAtual = 'all';
+        let filtroFilaAtual = 'active';
 
         function showToast(mensagem, tipo = 'info') {
             const container = document.getElementById('toast-container');
@@ -700,9 +704,9 @@ async def handle_web_app(request):
                         if (item.status === 'PROCESSING') {
                             showToast(`🚀 Download iniciado: ${item.titulo}`, 'warning');
                         } else if (item.status === 'COMPLETED') {
-                            showToast(`🎉 Concluído e ativo no Jellyfin: ${item.titulo}`, 'success');
+                            showToast(`🎉 Concluído: ${item.titulo}`, 'success');
                         } else if (item.status === 'FAILED') {
-                            showToast(`❌ Falha no download: ${item.titulo}`, 'error');
+                            showToast(`❌ Falha: ${item.titulo}`, 'error');
                         }
                     }
                     lastQueueState[item.id] = item.status;
@@ -764,9 +768,7 @@ async def handle_web_app(request):
                     document.getElementById('home-continue-grid').innerHTML = hC;
                     document.getElementById('container-continue-series').classList.remove('hidden');
                 }
-            } catch (e) {
-                console.error("Erro ao carregar séries em andamento:", e);
-            }
+            } catch (e) {}
 
             try {
                 const resM = await fetch('/api/catalog/movies').then(r => r.json());
@@ -863,9 +865,9 @@ async def handle_web_app(request):
             
             let statusBadge = '';
             if(media.status_local === 'COMPLETED') {
-                statusBadge = '<span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-3 py-1 rounded-full text-xs font-bold"><i class="fa-solid fa-circle-check mr-1"></i>Já Disponível no Jellyfin</span>';
+                statusBadge = '<span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-3 py-1 rounded-full text-xs font-bold"><i class="fa-solid fa-circle-check mr-1"></i>Já no Jellyfin</span>';
             } else if(media.status_local) {
-                statusBadge = '<span class="bg-sky-500/20 text-sky-400 border border-sky-500/40 px-3 py-1 rounded-full text-xs font-bold"><i class="fa-solid fa-clock mr-1"></i>Em Processamento / Fila</span>';
+                statusBadge = '<span class="bg-sky-500/20 text-sky-400 border border-sky-500/40 px-3 py-1 rounded-full text-xs font-bold"><i class="fa-solid fa-clock mr-1"></i>Em Fila</span>';
             }
 
             document.getElementById('detail-header').innerHTML = `
@@ -993,7 +995,7 @@ async def handle_web_app(request):
                         <span class="text-xs font-black text-sky-400">[${opt.indexador}]</span>
                         <span class="text-xs font-bold text-white ml-2">${opt.qualidade}</span>${dubloTag}
                     </div>
-                    <button onclick="adicionarEpAFila('${opt.url}', '${opt.qualidade.replace(/'/g,"")}')" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold px-4 py-2 rounded-xl transition shadow-lg shadow-emerald-600/20"><i class="fa-solid fa-plus mr-1"></i>Adicionar à Fila</button>
+                    <button onclick="adicionarEpAFila('${opt.url}', '${opt.qualidade.replace(/'/g,"")}')" class="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold px-4 py-2 rounded-xl transition shadow-lg shadow-emerald-600/20"><i class="fa-solid fa-plus mr-1"></i>Adicionar</button>
                 </div>`;
             });
 
@@ -1100,6 +1102,19 @@ async def handle_web_app(request):
             atualizarFilaEBiblioteca();
         }
 
+        function filtrarFila(categoria) {
+            filtroFilaAtual = categoria;
+            ['active', 'failed', 'completed'].forEach(cat => {
+                const btn = document.getElementById('q-filter-' + cat);
+                if (btn) {
+                    btn.className = cat === categoria
+                        ? 'px-4 py-2 rounded-xl transition bg-sky-600 text-white'
+                        : 'px-4 py-2 rounded-xl transition text-slate-400 hover:text-white';
+                }
+            });
+            atualizarFilaEBiblioteca();
+        }
+
         async function atualizarFilaEBiblioteca() {
             const data = await fetch('/api/queue').then(r => r.json());
             isQueuePaused = data.fila_pausada;
@@ -1119,8 +1134,19 @@ async def handle_web_app(request):
                 btnPause.innerHTML = '<i class="fa-solid fa-pause"></i> Pausar Fila';
             }
 
+            let filaFiltrada = (data.fila || []);
+            if (filtroFilaAtual === 'active') {
+                filaFiltrada = filaFiltrada.filter(item => item.status === 'PENDING' || item.status === 'PROCESSING');
+            } else if (filtroFilaAtual === 'failed') {
+                filaFiltrada = filaFiltrada.filter(item => item.status === 'FAILED');
+            } else if (filtroFilaAtual === 'completed') {
+                filaFiltrada = filaFiltrada.filter(item => item.status === 'COMPLETED');
+            }
+
+            const itensExibicao = filaFiltrada.slice(0, 20);
+
             let qHtml = '';
-            (data.fila || []).forEach(item => {
+            itensExibicao.forEach(item => {
                 let badgeItem = 'bg-slate-800 text-slate-300';
                 let ico = 'fa-clock';
                 if(item.status === 'PROCESSING') { badgeItem = 'bg-blue-600/30 border border-blue-500/50 text-blue-400 animate-pulse'; ico = 'fa-spinner fa-spin'; }
@@ -1140,8 +1166,8 @@ async def handle_web_app(request):
                             <p class="text-xs text-sky-400 font-bold mt-1">${item.qualidade}</p>
                         </div>
                         <div class="flex space-x-2">
-                            ${item.status === 'FAILED' ? `<button onclick="retryFila('${item.id}')" class="bg-amber-600 hover:bg-amber-500 text-xs font-bold px-3 py-1.5 rounded-xl"><i class="fa-solid fa-rotate-right mr-1"></i>Reenviar</button>` : ''}
-                            <button onclick="deletarFila('${item.id}')" class="bg-slate-800 hover:bg-rose-900 text-xs text-slate-400 hover:text-rose-200 px-3 py-1.5 rounded-xl border border-slate-700/60"><i class="fa-solid fa-trash"></i></button>
+                            ${item.status === 'FAILED' ? `<button onclick="retryFila('${item.id}')" class="bg-amber-600 hover:bg-amber-500 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-md shadow-amber-600/20"><i class="fa-solid fa-rotate-right mr-1"></i>Tentar Novamente</button>` : ''}
+                            <button onclick="deletarFila('${item.id}')" class="bg-slate-800 hover:bg-rose-900 text-xs text-slate-400 hover:text-rose-200 px-3 py-1.5 rounded-xl border border-slate-700/60 transition"><i class="fa-solid fa-trash"></i></button>
                         </div>
                     </div>
                     <div class="bg-slate-950/80 p-3 rounded-xl border border-slate-800/80">
@@ -1150,8 +1176,18 @@ async def handle_web_app(request):
                     ${item.erro_msg ? `<p class="text-xs text-rose-400 bg-rose-950/60 p-3 rounded-xl border border-rose-900/50">${item.erro_msg}</p>` : ''}
                 </div>`;
             });
+
             const queueListEl = document.getElementById('queue-list');
-            if(queueListEl) queueListEl.innerHTML = qHtml || '<p class="text-slate-400 text-sm py-4">A fila de espera está vazia.</p>';
+            if(queueListEl) {
+                if (itensExibicao.length === 0) {
+                    let msgVazio = 'Nenhum item pendente na fila.';
+                    if (filtroFilaAtual === 'failed') msgVazio = '🎉 Nenhuma falha registrada!';
+                    if (filtroFilaAtual === 'completed') msgVazio = 'Nenhum item concluído na visualização recente.';
+                    queueListEl.innerHTML = `<p class="text-slate-400 text-sm py-8 text-center font-semibold">${msgVazio}</p>`;
+                } else {
+                    queueListEl.innerHTML = qHtml;
+                }
+            }
 
             let salvos = data.salvos || [];
             if (filtroBibliotecaAtual !== 'all') {
@@ -1188,6 +1224,7 @@ async def handle_web_app(request):
 
         async function retryFila(id) {
             await fetch('/api/queue/retry', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}) });
+            showToast('Item reenviado para a fila!', 'success');
             atualizarFilaEBiblioteca();
         }
 
@@ -1216,38 +1253,4 @@ async def handle_web_app(request):
         }, 2000);
     </script>
 </body>
-</html>"""
-    return web.Response(text=html, content_type="text/html")
-
-async def iniciar_servidor():
-    await client.start(bot_token=Config.TELEGRAM_TOKEN)
-    logger.info("🤖 Sessão do Telethon iniciada no servidor HTTP.")
-
-    asyncio.create_task(worker_fila_processamento())
-
-    app = web.Application()
-    
-    app.router.add_route("*", "/stream/{media_id}", handle_stream)
-    app.router.add_get("/web", handle_web_app)
-    
-    app.router.add_get("/api/search", api_search)
-    app.router.add_get("/api/details", api_details)
-    app.router.add_get("/api/episodes", api_episodes)
-    app.router.add_get("/api/sources", api_sources)
-    app.router.add_post("/api/queue/add", api_add_queue)
-    app.router.add_post("/api/queue/add_season", api_add_season_queue)
-    app.router.add_post("/api/queue/toggle_pause", api_toggle_queue_pause)
-    app.router.add_get("/api/queue", api_get_queue)
-    app.router.add_post("/api/queue/retry", api_retry_queue)
-    app.router.add_post("/api/queue/delete", api_delete_queue)
-    
-    app.router.add_get("/api/catalog/movies", api_catalog_movies)
-    app.router.add_get("/api/catalog/series", api_catalog_series)
-    app.router.add_get("/api/series/continue", api_series_continue)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", Config.PORTA_STREAM_LOCAL)
-    await site.start()
-    logger.info(f"🌐 Servidor de Streaming rodando na porta {Config.PORTA_STREAM_LOCAL}")
-    logger.info(f"🌐 Painel Web do JellyBot disponível em http://{Config.IP_SERVIDOR}:{Config.PORTA_STREAM_LOCAL}/web")
+</html>
