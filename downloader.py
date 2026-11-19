@@ -62,7 +62,7 @@ def extrair_info_stream(s: dict) -> str:
         qualidade = "1080p FHD 🎬"
 
     servidor = ""
-    for srv in ["astra", "neon", "carbon", "azure", "fast", "s3", "torrentio"]:
+    for srv in ["astra", "neon", "carbon", "azure", "fast", "s3", "torrentio", "myembed", "prism", "nower"]:
         if srv in texto_full:
             servidor = f" [{srv.capitalize()}]"
             break
@@ -74,7 +74,16 @@ def limpar_nome(nome: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
 
-async def resolver_url_direta_async(url_original: str) -> str:
+def montar_headers_stream(headers_extra: dict = None) -> dict:
+    headers = dict(HEADERS_BROWSER)
+    if isinstance(headers_extra, dict):
+        for k, v in headers_extra.items():
+            if k and v:
+                headers[str(k)] = str(v)
+    return headers
+
+
+async def resolver_url_direta_async(url_original: str, headers_extra: dict = None) -> str:
     if not url_original:
         return url_original
 
@@ -89,17 +98,17 @@ async def resolver_url_direta_async(url_original: str) -> str:
     if "89.222.120.130" in url_original:
         return url_original
 
+    headers = montar_headers_stream(headers_extra)
+
     try:
         timeout = aiohttp.ClientTimeout(total=20, connect=10)
-        async with aiohttp.ClientSession(headers=HEADERS_BROWSER, timeout=timeout) as session:
-            # Primeiro tenta ler o Location sem baixar o corpo inteiro do vídeo
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             async with session.get(url_original, allow_redirects=False) as r_redir:
                 if r_redir.status in (301, 302, 303, 307, 308) and r_redir.headers.get("Location"):
                     destino = r_redir.headers["Location"]
                     logger.info(f"↪️ Redirect resolvido ({r_redir.status}): {destino}")
                     return destino
 
-            # Caso já retorne 200 ou siga redirects normais
             async with session.get(url_original, allow_redirects=True) as r:
                 if r.status in (200, 206):
                     return str(r.url)
@@ -161,11 +170,14 @@ async def consultar_indexador_unico(session: aiohttp.ClientSession, idx: dict, t
                     url_stream = s.get("url")
                     if isinstance(url_stream, str) and url_stream.startswith("http"):
                         qualidade_info = extrair_info_stream(s)
-                        resultados_idx.append({
+                        item_fonte = {
                             "indexador": idx["nome"],
                             "qualidade": qualidade_info,
                             "url": url_stream
-                        })
+                        }
+                        if isinstance(s.get("headers"), dict) and s.get("headers"):
+                            item_fonte["headers"] = s["headers"]
+                        resultados_idx.append(item_fonte)
             else:
                 logger.warning(f"⚠️ Indexador '{idx['nome']}' retornou HTTP {res.status}")
     except Exception as e:
@@ -295,7 +307,7 @@ async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None,
         return await client.upload_file(caminho_arquivo, progress_callback=progress_callback, part_size_kb=512)
 
 
-async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict, qualidade: str, progress_callback=None):
+async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict, qualidade: str, progress_callback=None, headers_extra: dict = None):
     if tipo == "movie":
         nome_limpo = limpar_nome(tmdb_info.get("title", "Filme"))
         ano = str(tmdb_info.get("release_date", "0000"))[:4]
@@ -316,7 +328,8 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
     partes_divididas = []
 
     try:
-        url_final = await resolver_url_direta_async(url_fonte)
+        url_final = await resolver_url_direta_async(url_fonte, headers_extra=headers_extra)
+        headers_download = montar_headers_stream(headers_extra)
 
         logger.info(f"⏳ A iniciar download temporário assíncrono: {nome_base}")
         if progress_callback:
@@ -324,7 +337,7 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
 
         try:
             timeout_cfg = aiohttp.ClientTimeout(total=None, connect=30, sock_read=30)
-            async with aiohttp.ClientSession(headers=HEADERS_BROWSER, timeout=timeout_cfg) as session:
+            async with aiohttp.ClientSession(headers=headers_download, timeout=timeout_cfg) as session:
                 async with session.get(url_final, allow_redirects=True) as r:
                     if r.status not in (200, 206):
                         raise ValueError(f"O servidor da fonte retornou HTTP {r.status}.")
