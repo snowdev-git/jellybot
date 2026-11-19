@@ -27,6 +27,15 @@ HEADERS_BROWSER = {
     "Connection": "keep-alive"
 }
 
+
+def normalizar_url_base_addon(url_base: str) -> str:
+    """Remove /manifest.json e barras extras do final da URL do addon."""
+    u = str(url_base or "").strip()
+    if u.endswith("/manifest.json"):
+        u = u[:-len("/manifest.json")]
+    return u.rstrip("/")
+
+
 def extrair_info_stream(s: dict) -> str:
     title = str(s.get("title", ""))
     name = str(s.get("name", ""))
@@ -36,7 +45,7 @@ def extrair_info_stream(s: dict) -> str:
     is_dub = any(termo in texto_full for termo in [
         "dub", "dublado", "dual", "pt-br", "ptbr", "br", "português", "portugues", "nacional", "multi"
     ])
-    
+
     if "legendado" in texto_full or "subtitled" in texto_full:
         if not ("dub" in texto_full or "dual" in texto_full):
             is_dub = False
@@ -60,10 +69,15 @@ def extrair_info_stream(s: dict) -> str:
 
     return f"{qualidade} ({audio}){servidor}"
 
+
 def limpar_nome(nome: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
+
 async def resolver_url_direta_async(url_original: str) -> str:
+    if not url_original:
+        return url_original
+
     if "urltech.gy" in url_original:
         match = re.search(r'/(\d+\.mp4)', url_original)
         if match:
@@ -76,14 +90,24 @@ async def resolver_url_direta_async(url_original: str) -> str:
         return url_original
 
     try:
-        async with aiohttp.ClientSession(headers=HEADERS_BROWSER) as session:
-            async with session.get(url_original, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                if r.status == 200:
+        timeout = aiohttp.ClientTimeout(total=20, connect=10)
+        async with aiohttp.ClientSession(headers=HEADERS_BROWSER, timeout=timeout) as session:
+            # Primeiro tenta ler o Location sem baixar o corpo inteiro do vídeo
+            async with session.get(url_original, allow_redirects=False) as r_redir:
+                if r_redir.status in (301, 302, 303, 307, 308) and r_redir.headers.get("Location"):
+                    destino = r_redir.headers["Location"]
+                    logger.info(f"↪️ Redirect resolvido ({r_redir.status}): {destino}")
+                    return destino
+
+            # Caso já retorne 200 ou siga redirects normais
+            async with session.get(url_original, allow_redirects=True) as r:
+                if r.status in (200, 206):
                     return str(r.url)
     except Exception as e:
         logger.warning(f"⚠️ Resolução de URL padrão mantida: {e}")
 
     return url_original
+
 
 def ordenar_fontes(resultados: list) -> list:
     """Prioriza FrostStream e o servidor Azure no topo dos resultados."""
@@ -115,31 +139,38 @@ def ordenar_fontes(resultados: list) -> list:
 
     return sorted(resultados, key=calcular_peso, reverse=True)
 
+
 async def consultar_indexador_unico(session: aiohttp.ClientSession, idx: dict, tipo: str, imdb_id: str, season: int = None, episode: int = None) -> list:
+    base_url = normalizar_url_base_addon(idx.get("url", ""))
+    if not base_url:
+        return []
+
     url = (
-        f"{idx['url']}/stream/movie/{imdb_id}.json"
+        f"{base_url}/stream/movie/{imdb_id}.json"
         if tipo == "movie"
-        else f"{idx['url']}/stream/series/{imdb_id}:{season}:{episode}.json"
+        else f"{base_url}/stream/series/{imdb_id}:{season}:{episode}.json"
     )
     resultados_idx = []
     try:
-        # Timeout individual curto para não travar a busca global
-        timeout = aiohttp.ClientTimeout(total=3.5)
+        timeout = aiohttp.ClientTimeout(total=7.0, connect=4.0)
         async with session.get(url, timeout=timeout) as res:
             if res.status == 200:
-                data = await res.json()
+                data = await res.json(content_type=None)
                 streams = data.get("streams", [])
                 for s in streams:
-                    if "url" in s and s["url"].startswith("http"):
+                    url_stream = s.get("url")
+                    if isinstance(url_stream, str) and url_stream.startswith("http"):
                         qualidade_info = extrair_info_stream(s)
                         resultados_idx.append({
                             "indexador": idx["nome"],
                             "qualidade": qualidade_info,
-                            "url": s["url"]  # Retorna a URL diretamente sem requisições extras
+                            "url": url_stream
                         })
+            else:
+                logger.warning(f"⚠️ Indexador '{idx['nome']}' retornou HTTP {res.status}")
     except Exception as e:
         logger.warning(f"⚠️ Indexador '{idx['nome']}' ignorado/timeout: {e}")
-    
+
     return resultados_idx
 
 
@@ -150,17 +181,17 @@ async def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None,
 
     resultados = []
     async with aiohttp.ClientSession(headers=HEADERS_BROWSER) as session:
-        # Dispara as requisições de todos os indexadores em paralelo
         tarefas = [
             consultar_indexador_unico(session, idx, tipo, imdb_id, season, episode)
             for idx in indexadores
         ]
         respostas = await asyncio.gather(*tarefas)
-        
+
         for lista_fonte in respostas:
             resultados.extend(lista_fonte)
 
     return ordenar_fontes(resultados)
+
 
 async def atualizar_jellyfin_async():
     if not Config.JELLYFIN_API_KEY:
@@ -173,6 +204,7 @@ async def atualizar_jellyfin_async():
     except Exception as e:
         logger.error(f"❌ Erro ao atualizar biblioteca do Jellyfin: {e}")
         return False
+
 
 async def dividir_arquivo_binario_async(caminho_arquivo: str, tamanho_max_bytes: int = LIMITE_PARTE_BYTES) -> list:
     tamanho_total = os.path.getsize(caminho_arquivo)
@@ -199,6 +231,7 @@ async def dividir_arquivo_binario_async(caminho_arquivo: str, tamanho_max_bytes:
             await asyncio.sleep(0)
 
     return partes_criadas
+
 
 async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None, max_workers: int = 4):
     try:
@@ -249,6 +282,7 @@ async def upload_paralelo_telegram(caminho_arquivo: str, progress_callback=None,
         logger.warning(f"⚠️ Envio paralelo alternado para padrão: {e}")
         return await client.upload_file(caminho_arquivo, progress_callback=progress_callback, part_size_kb=512)
 
+
 async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict, qualidade: str, progress_callback=None):
     if tipo == "movie":
         nome_limpo = limpar_nome(tmdb_info.get("title", "Filme"))
@@ -273,13 +307,14 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         url_final = await resolver_url_direta_async(url_fonte)
 
         logger.info(f"⏳ A iniciar download temporário assíncrono: {nome_base}")
-        if progress_callback: progress_callback("⏳ **A verificar disponibilidade da mídia...**")
+        if progress_callback:
+            progress_callback("⏳ **A verificar disponibilidade da mídia...**")
 
         try:
             timeout_cfg = aiohttp.ClientTimeout(total=None, connect=30, sock_read=30)
             async with aiohttp.ClientSession(headers=HEADERS_BROWSER, timeout=timeout_cfg) as session:
                 async with session.get(url_final, allow_redirects=True) as r:
-                    if r.status != 200:
+                    if r.status not in (200, 206):
                         raise ValueError(f"O servidor da fonte retornou HTTP {r.status}.")
 
                     content_type = r.headers.get('Content-Type', '').lower()
@@ -337,7 +372,8 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
         partes_divididas = await dividir_arquivo_binario_async(caminho_temp, LIMITE_PARTE_BYTES)
 
         logger.info(f"🚀 A iniciar upload acelerado ({len(partes_divididas)} bloco(s)) para o Telegram: {nome_base}")
-        if progress_callback: progress_callback(f"🚀 **A guardar no Telegram Storage ({len(partes_divididas)} bloco(s))...**")
+        if progress_callback:
+            progress_callback(f"🚀 **A guardar no Telegram Storage ({len(partes_divididas)} bloco(s))...**")
 
         titulo = tmdb_info.get('title') or tmdb_info.get('name') or nome_base
         data_rel = tmdb_info.get('release_date') or tmdb_info.get('first_air_date') or 'N/A'
@@ -420,9 +456,13 @@ async def processar_e_hospedar_midia(url_fonte: str, tipo: str, tmdb_info: dict,
 
     finally:
         if os.path.exists(caminho_temp):
-            try: os.remove(caminho_temp)
-            except: pass
+            try:
+                os.remove(caminho_temp)
+            except Exception:
+                pass
         for p in partes_divididas:
             if os.path.exists(p) and p != caminho_temp:
-                try: os.remove(p)
-                except: pass
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
