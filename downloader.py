@@ -175,7 +175,19 @@ async def consultar_indexador_unico(session: aiohttp.ClientSession, idx: dict, t
 
 
 async def buscar_fontes_indexadores(tipo: str, imdb_id: str, season: int = None, episode: int = None):
-    indexadores = carregar_indexadores()
+    indexadores = list(carregar_indexadores() or [])
+
+    url_frost = "https://froststream.cloutteam.com/usr_a48cee213ab294d6aa0f"
+    ja_tem_frost = any(
+        "frost" in str(idx.get("nome", "")).lower() or "froststream" in str(idx.get("url", "")).lower()
+        for idx in indexadores
+    )
+    if not ja_tem_frost:
+        indexadores.append({
+            "nome": "FrostStream",
+            "url": url_frost
+        })
+
     if not indexadores:
         return []
 
